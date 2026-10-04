@@ -475,10 +475,10 @@ def save_menu_item(data: dict[str, Any], form: Any, actor: str, item_id: str | N
     if image_url and not image_url.startswith(("https://", "http://")):
         raise ValidationError("URL รูปภาพต้องขึ้นต้นด้วย http:// หรือ https://")
     available = parse_bool(form.get("available", "false"), "สถานะพร้อมขาย")
-    spiciness = normalize_text(form.get("spiciness", "ไม่เผ็ด"), "ระดับความเผ็ด", 20)
+    spiciness = normalize_text(form.get("spiciness", "ไม่เผ็ด"), "ระดับ", 20)
     portion = normalize_text(form.get("portion", "ปกติ"), "ขนาด", 20)
     options = {
-        "spiciness": parse_option_lines(form.get("spiciness_options", "ไม่เผ็ด|0\nเผ็ดน้อย|0\nเผ็ดกลาง|0\nเผ็ดมาก|0"), "ระดับความเผ็ด"),
+        "spiciness": parse_option_lines(form.get("spiciness_options", "ไม่เผ็ด|0\nเผ็ดน้อย|0\nเผ็ดกลาง|0\nเผ็ดมาก|0"), "ระดับ"),
         "portion": parse_option_lines(form.get("portion_options", "เล็ก|0\nปกติ|0\nใหญ่|0"), "ขนาด"),
         "addons": parse_option_lines(form.get("addon_options", ""), "ท็อปปิ้ง", required=False),
     }
@@ -598,7 +598,7 @@ def create_customer_order(data: dict[str, Any], customer: dict[str, Any], menu_i
         portion_value = selections.get("portion")
     else:
         addons_value, spicy_value, portion_value = [], None, None
-    spicy = _selected_option(configured.get("spiciness", []), spicy_value or menu.get("spiciness"), "ระดับความเผ็ด")
+    spicy = _selected_option(configured.get("spiciness", []), spicy_value or menu.get("spiciness"), "ระดับ")
     portion = _selected_option(configured.get("portion", []), portion_value or menu.get("portion"), "ขนาด")
     if not spicy_value:
         spicy = configured.get("spiciness", [spicy])[0]
