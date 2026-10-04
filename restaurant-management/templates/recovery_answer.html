@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+{% block title %}ตั้งคำตอบยืนยันตัวตน{% endblock %}
+{% block content %}
+<section class="card form-card">
+  <div class="eyebrow">กู้คืนบัญชี</div>
+  <h1>ตั้งคำตอบยืนยันตัวตน</h1>
+  <p class="muted">ใช้คำตอบเดียวกับที่กรอกได้ในช่อง “คุณชอบอะไร?” ตอนสมัคร หากลืมรหัสผ่านจะต้องใช้คำตอบนี้</p>
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field"><label for="current_password">รหัสผ่านปัจจุบัน</label><input id="current_password" type="password" name="current_password" required maxlength="128" autocomplete="current-password"></div>
+    <div class="field"><label for="security_answer">คำตอบใหม่</label><input id="security_answer" name="security_answer" required minlength="2" maxlength="120" autocomplete="off"></div>
+    <button>บันทึกคำตอบ</button>
+  </form>
+</section>
+{% endblock %}

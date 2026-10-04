@@ -3,16 +3,18 @@
     {
       "id": "0b955a8d-c4b1-4d73-8b65-c62b93089f08",
       "username": "admin",
-      "password_hash": "scrypt:32768:8:1$KguoD2pmnrGiWo87$099793ffe5c9790a022a1208e6ab4081654aaa5244654010cf57b7d477b0a589203ec8656b7c5d7eaa607db217fbd690ebeba7a7f73042c8a3a48d2990ef4daa",
+      "password_hash": "scrypt:32768:8:1$IwPyStHrJEmnIkg0$a0e866d2ac444c8a4e762247c7f5a01aa109ffebe0f298b7bcb9e320cc2d56e209af67aee42c3dbef84f2d1485a154985d83fa7f20eddfad576f769143fc9278",
       "role": "admin",
-      "created_at": "2026-10-05T00:49:28+07:00"
+      "created_at": "2026-10-05T00:49:28+07:00",
+      "security_answer_hash": "scrypt:32768:8:1$m6UtjsFYB95LzCvH$8bd79fab03a732a51466795625cfbecb4b2f15c0da7bde8c12fa70ac6ef37089559bc6cade9be482a33053a56c1cf846a70eb081091874ca39fda7616fa5271f"
     },
     {
       "id": "88c9e6d9-0312-4b9c-9198-e69f5b561a58",
       "username": "staff",
       "password_hash": "scrypt:32768:8:1$isTRrcrXhjy55gvc$2a8414353370bd221c4e23001ea2e5b4f1d04fe2cf57fd365ddfb52e6424a54794493c5a4f40daeb0f0b6f261b6de28acfff00e0127ac3c663592bcf366f178b",
       "role": "staff",
-      "created_at": "2026-10-05T00:49:29+07:00"
+      "created_at": "2026-10-05T00:49:29+07:00",
+      "security_answer_hash": "scrypt:32768:8:1$8YIdqOY9MXbiKmrj$4b7489432ff1a7060d672b91ecc5ed293336a7b28aa74b804481a6c26bd35ed6e61e6f113424d8be8f87a50901a4ce9b766f36cc167a094c1d22f2bb5635d54b"
     },
     {
       "id": "dccbe9e5-5362-4096-b3ef-a168158b7ca8",
@@ -527,6 +529,20 @@
       "actor": "admin",
       "action": "checkout",
       "detail": "ชำระออเดอร์ 1CD0F22E: 100.58 บาท"
+    },
+    {
+      "id": "2665cbef-0877-4952-9b73-d075cc51ab7d",
+      "at": "2026-10-05T02:30:42+07:00",
+      "actor": "admin",
+      "action": "password_reset",
+      "detail": "รีเซ็ตรหัสผ่านด้วยคำตอบยืนยันตัวตน"
+    },
+    {
+      "id": "568c9900-3334-4066-bdc7-7f20580814a9",
+      "at": "2026-10-05T02:31:19+07:00",
+      "actor": "admin",
+      "action": "password_reset",
+      "detail": "รีเซ็ตรหัสผ่านด้วยคำตอบยืนยันตัวตน"
     }
   ],
   "settings": {
