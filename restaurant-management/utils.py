@@ -7,6 +7,8 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError, HTTPError
+from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -14,6 +16,9 @@ from werkzeug.security import check_password_hash, generate_password_hash
 BASE_DIR = Path(__file__).resolve().parent
 SEED_FILE = BASE_DIR / "data.json"
 DATA_FILE = Path(os.environ.get("RMS_DATA_FILE", "/tmp/restaurant-management-data.json" if os.environ.get("VERCEL") else str(BASE_DIR / "data.json")))
+UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "").rstrip("/")
+UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+REDIS_DATA_KEY = os.environ.get("RMS_REDIS_DATA_KEY", "restaurant-management:data")
 ROLES = {"admin", "staff", "customer"}
 TABLE_STATUSES = {"Vacant", "Occupied", "Awaiting Checkout"}
 ORDER_STATUSES = {"active", "preparing", "ready", "paid", "cancelled"}
@@ -23,16 +28,67 @@ class ValidationError(ValueError):
     """An expected, user-correctable input error."""
 
 
+class StorageError(RuntimeError):
+    """A configured persistent storage service is unavailable or invalid."""
+
+
+def remote_storage_enabled() -> bool:
+    return bool(UPSTASH_URL and UPSTASH_TOKEN)
+
+
+def uses_ephemeral_storage() -> bool:
+    return bool(os.environ.get("VERCEL")) and not remote_storage_enabled()
+
+
+def _redis_command(command: list[str]) -> Any:
+    try:
+        request = Request(
+            UPSTASH_URL,
+            data=json.dumps(command, ensure_ascii=False).encode("utf-8"),
+            headers={"Authorization": f"Bearer {UPSTASH_TOKEN}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=8) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        if "error" in result:
+            raise StorageError("บริการจัดเก็บข้อมูลขัดข้อง")
+        return result.get("result")
+    except StorageError:
+        raise
+    except (URLError, HTTPError, OSError, json.JSONDecodeError, TypeError, ValueError) as error:
+        raise StorageError("เชื่อมต่อบริการจัดเก็บข้อมูลไม่ได้") from error
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 def empty_data() -> dict[str, Any]:
-    return {"users": [], "menu_items": [], "tables": [], "orders": [], "reservations": [], "queue": [], "audit": []}
+    return {"users": [], "menu_items": [], "tables": [], "orders": [], "reservations": [], "queue": [], "audit": [], "settings": {"restaurant_name": "อิ่มอร่อย"}}
 
 
 def load_data() -> dict[str, Any]:
     """Load data safely; initialize from the bundled sample on first run."""
+    if bool(UPSTASH_URL) != bool(UPSTASH_TOKEN):
+        raise StorageError("ต้องกำหนด Upstash REST URL และ token ให้ครบทั้งคู่")
+    if remote_storage_enabled():
+        stored = _redis_command(["GET", REDIS_DATA_KEY])
+        if stored is None:
+            initial = json.loads(SEED_FILE.read_text(encoding="utf-8")) if SEED_FILE.exists() else empty_data()
+            if not save_data(initial):
+                raise StorageError("บันทึกข้อมูลเริ่มต้นไม่สำเร็จ")
+            return initial
+        try:
+            data = json.loads(stored)
+            if not isinstance(data, dict):
+                raise ValueError("invalid data root")
+            defaults = empty_data()
+            for key, value in defaults.items():
+                if not isinstance(data.get(key), type(value)):
+                    data[key] = value
+            return data
+        except (json.JSONDecodeError, ValueError, TypeError) as error:
+            raise StorageError("ข้อมูลในบริการจัดเก็บไม่ถูกต้อง") from error
     try:
         DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
         if not DATA_FILE.exists():
@@ -54,6 +110,11 @@ def load_data() -> dict[str, Any]:
 
 def save_data(data: dict[str, Any]) -> bool:
     """Write JSON atomically. Returns False rather than leaking file errors."""
+    if bool(UPSTASH_URL) != bool(UPSTASH_TOKEN):
+        raise StorageError("ต้องกำหนด Upstash REST URL และ token ให้ครบทั้งคู่")
+    if remote_storage_enabled():
+        serialized = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+        return _redis_command(["SET", REDIS_DATA_KEY, serialized]) == "OK"
     try:
         DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
         temp_path = DATA_FILE.with_suffix(DATA_FILE.suffix + ".tmp")
@@ -82,6 +143,15 @@ def ensure_demo_users(data: dict[str, Any]) -> bool:
     if changed:
         save_data(data)
     return changed
+
+
+def update_restaurant_name(data: dict[str, Any], name_value: Any, actor: str) -> str:
+    name = normalize_text(name_value, "ชื่อร้าน", 80)
+    data.setdefault("settings", {})["restaurant_name"] = name
+    audit(data, actor, "restaurant_name", f"เปลี่ยนชื่อร้านเป็น {name}")
+    if not save_data(data):
+        raise ValidationError("บันทึกชื่อร้านไม่สำเร็จ")
+    return name
 
 
 def normalize_text(value: Any, label: str, max_length: int = 100, required: bool = True) -> str:
@@ -168,19 +238,36 @@ def list_records(rows: list[dict[str, Any]], query: str = "", category: str = ""
     return paginate(filtered, page, per_page)
 
 
-def register_user(data: dict[str, Any], username_value: Any, password_value: Any) -> dict[str, Any]:
+def prepare_registration(data: dict[str, Any], username_value: Any, password_value: Any) -> dict[str, str]:
     username = normalize_text(username_value, "ชื่อผู้ใช้", 40)
     password = normalize_text(password_value, "รหัสผ่าน", 128)
     if len(username) < 3 or len(password) < 8:
         raise ValidationError("ชื่อผู้ใช้ต้องยาวอย่างน้อย 3 ตัว และรหัสผ่านอย่างน้อย 8 ตัว")
     if any(user.get("username", "").casefold() == username.casefold() for user in data["users"]):
         raise ValidationError("ชื่อผู้ใช้นี้ถูกใช้แล้ว")
-    user = {"id": str(uuid4()), "username": username, "password_hash": generate_password_hash(password), "role": "customer", "created_at": now_iso()}
+    return {"username": username, "password_hash": generate_password_hash(password), "created_at": now_iso()}
+
+
+def complete_registration(data: dict[str, Any], pending: Any) -> dict[str, Any]:
+    if not isinstance(pending, dict):
+        raise ValidationError("ไม่พบข้อมูลสมัครสมาชิก กรุณาเริ่มใหม่")
+    username = normalize_text(pending.get("username"), "ชื่อผู้ใช้", 40)
+    password_hash = pending.get("password_hash")
+    if not isinstance(password_hash, str) or len(password_hash) > 512:
+        raise ValidationError("ข้อมูลยืนยันสมัครไม่ถูกต้อง กรุณาเริ่มใหม่")
+    if any(user.get("username", "").casefold() == username.casefold() for user in data["users"]):
+        raise ValidationError("ชื่อผู้ใช้นี้ถูกใช้แล้ว กรุณาสมัครด้วยชื่ออื่น")
+    user = {"id": str(uuid4()), "username": username, "password_hash": password_hash, "role": "customer", "created_at": now_iso()}
     data["users"].append(user)
     audit(data, username, "register", "สมัครสมาชิก")
     if not save_data(data):
         raise ValidationError("บันทึกข้อมูลไม่สำเร็จ กรุณาลองใหม่")
     return user
+
+
+def register_user(data: dict[str, Any], username_value: Any, password_value: Any) -> dict[str, Any]:
+    """Register immediately for internal callers that don't need confirmation."""
+    return complete_registration(data, prepare_registration(data, username_value, password_value))
 
 
 def authenticate(data: dict[str, Any], username_value: Any, password_value: Any) -> dict[str, Any] | None:
@@ -287,6 +374,29 @@ def create_order(data: dict[str, Any], table_id_value: Any, actor: str) -> dict[
     audit(data, actor, "order_create", f"เปิดออเดอร์โต๊ะ {table['number']}")
     save_data(data)
     return order
+
+
+def create_customer_order(data: dict[str, Any], customer: dict[str, Any], menu_id_value: Any, quantity_value: Any) -> dict[str, Any]:
+    """Add a menu item to the signed-in customer's active online order."""
+    menu_id = parse_int(menu_id_value, "เมนู", 1, 100000)
+    quantity = parse_int(quantity_value, "จำนวน", 1, 50)
+    menu = find_by_id(data["menu_items"], menu_id)
+    if not menu or not menu.get("available"):
+        raise ValidationError("เมนูนี้หมดหรือไม่พร้อมขาย")
+    order = next((o for o in data["orders"] if str(o.get("customer_id")) == str(customer["id"]) and o.get("order_type") == "online" and o.get("status") == "active"), None)
+    if not order:
+        order = {"id": str(uuid4())[:8].upper(), "table_id": 0, "customer_id": customer["id"], "order_type": "online", "items": [], "status": "active", "created_at": now_iso(), "updated_at": now_iso()}
+        data["orders"].append(order)
+    return change_order_item(data, order["id"], menu_id, quantity, customer["username"])
+
+
+def change_customer_order_item(data: dict[str, Any], order_id: str, customer: dict[str, Any], menu_id_value: Any, quantity_value: Any) -> dict[str, Any]:
+    order = find_by_id(data["orders"], order_id)
+    if not order or str(order.get("customer_id")) != str(customer["id"]):
+        raise ValidationError("ไม่พบออเดอร์ของบัญชีนี้")
+    if order.get("status") != "active":
+        raise ValidationError("แก้ไขออเดอร์ได้ก่อนร้านเริ่มเตรียมอาหารเท่านั้น")
+    return change_order_item(data, order_id, menu_id_value, quantity_value, customer["username"])
 
 
 def change_order_item(data: dict[str, Any], order_id: str, menu_id: Any, quantity_value: Any, actor: str) -> dict[str, Any]:

@@ -16,5 +16,6 @@
   "orders": [],
   "reservations": [],
   "queue": [],
-  "audit": []
+  "audit": [],
+  "settings": {"restaurant_name": "อิ่มอร่อย"}
 }

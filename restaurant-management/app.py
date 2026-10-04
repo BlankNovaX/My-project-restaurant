@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from functools import wraps
 from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, session, url_for
 
@@ -30,7 +31,8 @@ def create_app() -> Flask:
 
     @app.context_processor
     def shared_template_values():
-        return {"current_user": current_user(), "csrf_token": session.get("csrf_token", ""), "currency": "฿"}
+        settings = getattr(g, "data", {}).get("settings", {})
+        return {"current_user": current_user(), "csrf_token": session.get("csrf_token", ""), "currency": "฿", "restaurant_name": settings.get("restaurant_name", "อิ่มอร่อย"), "storage_warning": utils.uses_ephemeral_storage()}
 
     def current_user():
         user_id = session.get("user_id")
@@ -66,14 +68,41 @@ def create_app() -> Flask:
     def register():
         if request.method == "POST":
             try:
-                user = utils.register_user(g.data, request.form.get("username"), request.form.get("password"))
-                session.clear()
-                session["user_id"] = user["id"]
-                flash("สมัครสมาชิกเรียบร้อย", "success")
-                return redirect(url_for("dashboard"))
+                pending = utils.prepare_registration(g.data, request.form.get("username"), request.form.get("password"))
+                session["pending_registration"] = pending
+                flash("ตรวจสอบชื่อบัญชี แล้วกดยืนยันเพื่อสร้างบัญชี", "success")
+                return redirect(url_for("register_confirm"))
             except utils.ValidationError as error:
                 handle_validation(error)
         return render_template("auth.html", mode="register")
+
+    @app.route("/register/confirm", methods=["GET", "POST"])
+    def register_confirm():
+        pending = session.get("pending_registration")
+        if not isinstance(pending, dict):
+            flash("ไม่พบข้อมูลสมัครสมาชิก กรุณากรอกข้อมูลอีกครั้ง", "warning")
+            return redirect(url_for("register"))
+        try:
+            created_at = datetime.fromisoformat(pending.get("created_at", ""))
+            expired = (datetime.now(timezone.utc) - created_at.astimezone(timezone.utc)).total_seconds() > 20 * 60
+        except (TypeError, ValueError):
+            expired = True
+        if expired:
+            session.pop("pending_registration", None)
+            flash("ข้อมูลยืนยันหมดอายุ กรุณาสมัครใหม่", "warning")
+            return redirect(url_for("register"))
+        if request.method == "POST":
+            try:
+                user = utils.complete_registration(g.data, pending)
+                session.clear()
+                session["user_id"] = user["id"]
+                flash("ยืนยันและสมัครสมาชิกเรียบร้อยแล้ว", "success")
+                return redirect(url_for("dashboard"))
+            except utils.ValidationError as error:
+                session.pop("pending_registration", None)
+                handle_validation(error)
+                return redirect(url_for("register"))
+        return render_template("register_confirm.html", pending=pending)
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
@@ -106,7 +135,8 @@ def create_app() -> Flask:
     def dashboard():
         user = current_user()
         if user["role"] == "customer":
-            return render_template("customer.html", menu=utils.list_records(g.data["menu_items"], request.args.get("q", ""), request.args.get("category", ""), request.args.get("sort", "name"), request.args.get("direction", "asc"), request.args.get("page", 1)), categories=sorted({i["category"] for i in g.data["menu_items"]}))
+            listing = utils.list_records(g.data["menu_items"], request.args.get("q", ""), request.args.get("category", ""), request.args.get("sort", "name"), request.args.get("direction", "asc"), request.args.get("page", 1))
+            return render_template("customer.html", listing=listing, categories=sorted({i["category"] for i in g.data["menu_items"]}))
         report = utils.daily_report(g.data)
         active_orders = [o for o in g.data["orders"] if o.get("status") not in {"paid", "cancelled"}]
         active_orders.sort(key=lambda o: o.get("created_at", ""))
@@ -117,6 +147,8 @@ def create_app() -> Flask:
     def menu_list():
         user = current_user()
         listing = utils.list_records(g.data["menu_items"], request.args.get("q", ""), request.args.get("category", ""), request.args.get("sort", "name"), request.args.get("direction", "asc"), request.args.get("page", 1))
+        if user["role"] == "customer":
+            return render_template("customer.html", listing=listing, categories=sorted({i["category"] for i in g.data["menu_items"]}))
         return render_template("menu.html", listing=listing, categories=sorted({i["category"] for i in g.data["menu_items"]}), can_edit=user["role"] in {"admin", "staff"})
 
     @app.route("/menu/new", methods=["GET", "POST"])
@@ -301,25 +333,87 @@ def create_app() -> Flask:
     def reports():
         return render_template("reports.html", report=utils.daily_report(g.data), audit=list(reversed(g.data["audit"][-30:])))
 
+    @app.route("/settings", methods=["GET", "POST"])
+    @roles_required("admin")
+    def settings():
+        if request.method == "POST":
+            try:
+                utils.update_restaurant_name(g.data, request.form.get("restaurant_name"), current_user()["username"])
+                flash("บันทึกชื่อร้านแล้ว", "success")
+                return redirect(url_for("settings"))
+            except utils.ValidationError as error:
+                handle_validation(error)
+        return render_template("settings.html", settings=g.data.get("settings", {}))
+
+    @app.get("/my-orders")
+    @roles_required("customer")
+    def customer_orders():
+        user = current_user()
+        own_orders = [o for o in g.data["orders"] if str(o.get("customer_id")) == str(user["id"]) and o.get("order_type") == "online"]
+        own_orders.sort(key=lambda o: o.get("created_at", ""), reverse=True)
+        return render_template("customer_orders.html", orders=own_orders, order_total=utils.order_total)
+
+    @app.get("/my-orders/<order_id>")
+    @roles_required("customer")
+    def customer_order_detail(order_id):
+        user = current_user()
+        order = utils.find_by_id(g.data["orders"], order_id)
+        if not order or str(order.get("customer_id")) != str(user["id"]) or order.get("order_type") != "online":
+            abort(404)
+        return render_template("customer_order.html", order=order, menu=g.data["menu_items"], order_total=utils.order_total)
+
+    @app.post("/my-orders/add")
+    @roles_required("customer")
+    def customer_order_add():
+        try:
+            order = utils.create_customer_order(g.data, current_user(), request.form.get("menu_id"), request.form.get("quantity", 1))
+            flash("เพิ่มรายการในออเดอร์แล้ว", "success")
+            return redirect(url_for("customer_order_detail", order_id=order["id"]))
+        except utils.ValidationError as error:
+            handle_validation(error)
+            return redirect(url_for("dashboard"))
+
+    @app.post("/my-orders/<order_id>/items")
+    @roles_required("customer")
+    def customer_order_item(order_id):
+        try:
+            utils.change_customer_order_item(g.data, order_id, current_user(), request.form.get("menu_id"), request.form.get("quantity"))
+            flash("ปรับจำนวนในออเดอร์แล้ว", "success")
+        except utils.ValidationError as error:
+            handle_validation(error)
+        return redirect(url_for("customer_order_detail", order_id=order_id))
+
     @app.get("/health")
     def health():
         return jsonify({"ok": True, "service": "restaurant-management"})
 
     @app.errorhandler(400)
     def bad_request(_error):
+        if request.path.startswith("/menu"):
+            flash("ทำรายการเมนูไม่สำเร็จ กลับสู่หน้าหลักแล้ว", "warning")
+            return redirect(url_for("index"))
         return render_template("error.html", code=400, message="คำขอไม่ถูกต้องหรือหมดอายุ กรุณาลองใหม่"), 400
 
     @app.errorhandler(403)
     def forbidden(_error):
+        if request.path.startswith("/menu"):
+            flash("คุณไม่มีสิทธิ์เข้าถึงเมนูหน้านี้ กลับสู่หน้าหลักแล้ว", "warning")
+            return redirect(url_for("index"))
         return render_template("error.html", code=403, message="คุณไม่มีสิทธิ์เข้าถึงหน้านี้"), 403
 
     @app.errorhandler(404)
     def not_found(_error):
+        if request.path.startswith("/menu"):
+            flash("ไม่พบเมนูหรือหน้าที่เลือก กลับสู่หน้าหลักแล้ว", "warning")
+            return redirect(url_for("index"))
         return render_template("error.html", code=404, message="ไม่พบหน้าหรือข้อมูลที่ต้องการ"), 404
 
     @app.errorhandler(500)
     def server_error(_error):
         app.logger.exception("Unhandled application error")
+        if request.path.startswith("/menu"):
+            flash("เปิดหน้าเมนูไม่สำเร็จ กลับสู่หน้าหลักแล้ว", "warning")
+            return redirect(url_for("index"))
         if request.path.startswith("/api/"):
             return jsonify({"error": "เกิดข้อผิดพลาดภายในระบบ กรุณาลองใหม่"}), 500
         return render_template("error.html", code=500, message="เกิดข้อผิดพลาดภายในระบบ กรุณาลองใหม่"), 500

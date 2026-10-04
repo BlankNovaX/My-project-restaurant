@@ -1,0 +1,3 @@
+{% extends 'base.html' %}{% block title %}ยืนยันสมัครสมาชิก{% endblock %}{% block content %}
+<section class="card form-card"><div class="eyebrow">ขั้นตอนสุดท้าย</div><h1>ยืนยันการสมัครสมาชิก</h1><p>ตรวจสอบชื่อผู้ใช้ก่อนสร้างบัญชีลูกค้า</p><div class="card" style="background:#f7f8f3"><span class="muted">ชื่อผู้ใช้</span><strong style="display:block;font-size:20px">{{ pending.username }}</strong><small class="muted">ลิงก์ยืนยันนี้จะหมดอายุใน 20 นาที</small></div><form method="post" class="actions" style="margin-top:18px"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>ยืนยันและสร้างบัญชี</button><a class="btn secondary" href="{{ url_for('register') }}">กลับไปแก้ไข</a></form></section>
+{% endblock %}
