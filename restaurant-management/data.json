@@ -1,0 +1,548 @@
+{
+  "users": [
+    {
+      "id": "0b955a8d-c4b1-4d73-8b65-c62b93089f08",
+      "username": "admin",
+      "password_hash": "scrypt:32768:8:1$KguoD2pmnrGiWo87$099793ffe5c9790a022a1208e6ab4081654aaa5244654010cf57b7d477b0a589203ec8656b7c5d7eaa607db217fbd690ebeba7a7f73042c8a3a48d2990ef4daa",
+      "role": "admin",
+      "created_at": "2026-10-05T00:49:28+07:00"
+    },
+    {
+      "id": "88c9e6d9-0312-4b9c-9198-e69f5b561a58",
+      "username": "staff",
+      "password_hash": "scrypt:32768:8:1$isTRrcrXhjy55gvc$2a8414353370bd221c4e23001ea2e5b4f1d04fe2cf57fd365ddfb52e6424a54794493c5a4f40daeb0f0b6f261b6de28acfff00e0127ac3c663592bcf366f178b",
+      "role": "staff",
+      "created_at": "2026-10-05T00:49:29+07:00"
+    },
+    {
+      "id": "dccbe9e5-5362-4096-b3ef-a168158b7ca8",
+      "username": "เทส",
+      "email": "adsad@gmail.com",
+      "password_hash": "scrypt:32768:8:1$9W4PUuYLVB2pRy8C$64d6792d344c1a44b8a2c99e632fb923efdf9c3dac3792208e7f57c1589e427d36078bcb92ebb2b510709c6a8089c5671f2440a788382126254a02700d5d5db8",
+      "role": "customer",
+      "created_at": "2026-10-05T00:50:08+07:00"
+    }
+  ],
+  "menu_items": [
+    {
+      "id": 1,
+      "name": "ข้าวกะเพราไก่ไข่ดาว",
+      "category": "อาหารจานเดียว",
+      "price": 79.0,
+      "image_url": "https://www.unileverfoodsolutions.co.th/dam/global-ufs/mcos/SEA/calcmenu/recipes/TH-recipes/chicken-&-other-poultry-dishes/%E0%B8%81%E0%B8%B0%E0%B9%80%E0%B8%9E%E0%B8%A3%E0%B8%B2%E0%B9%84%E0%B8%81%E0%B9%88%E0%B9%84%E0%B8%82%E0%B9%88%E0%B8%94%E0%B8%B2%E0%B8%A7/%E0%B8%81%E0%B8%B0%E0%B9%80%E0%B8%9E%E0%B8%A3%E0%B8%B2%E0%B9%84%E0%B8%81%E0%B9%88%E0%B9%84%E0%B8%82%E0%B9%88%E0%B8%94%E0%B8%B2%E0%B8%A7_header.jpg",
+      "available": true,
+      "spiciness": "ไม่เผ็ด",
+      "portion": "ปกติ",
+      "addons": [
+        "ไข่ดาว",
+        "เพิ่มเนื้อ"
+      ],
+      "created_at": "2026-01-10T10:00:00+07:00",
+      "options": {
+        "spiciness": [
+          {
+            "name": "ไม่เผ็ด",
+            "price": 0.0
+          },
+          {
+            "name": "เผ็ดน้อย",
+            "price": 0.0
+          },
+          {
+            "name": "เผ็ดกลาง",
+            "price": 0.0
+          },
+          {
+            "name": "เผ็ดมาก",
+            "price": 0.0
+          }
+        ],
+        "portion": [
+          {
+            "name": "เล็ก",
+            "price": 0.0
+          },
+          {
+            "name": "ปกติ",
+            "price": 10.0
+          },
+          {
+            "name": "ใหญ่",
+            "price": 20.0
+          }
+        ],
+        "addons": [
+          {
+            "name": "ไข่ดาว",
+            "price": 5.0
+          },
+          {
+            "name": "เพิ่มเนื้อ",
+            "price": 10.0
+          }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "name": "ผัดไทยกุ้งสด",
+      "category": "อาหารจานเดียว",
+      "price": 119.0,
+      "image_url": "",
+      "available": true,
+      "spiciness": "ไม่เผ็ด",
+      "portion": "ปกติ",
+      "addons": [
+        "เพิ่มชีส"
+      ],
+      "created_at": "2026-01-10T10:00:00+07:00",
+      "options": {
+        "spiciness": [
+          {
+            "name": "ไม่เผ็ด",
+            "price": 0
+          },
+          {
+            "name": "เผ็ดน้อย",
+            "price": 0
+          },
+          {
+            "name": "เผ็ดกลาง",
+            "price": 0
+          },
+          {
+            "name": "เผ็ดมาก",
+            "price": 0
+          }
+        ],
+        "portion": [
+          {
+            "name": "เล็ก",
+            "price": 0
+          },
+          {
+            "name": "ปกติ",
+            "price": 0
+          },
+          {
+            "name": "ใหญ่",
+            "price": 0
+          }
+        ],
+        "addons": [
+          {
+            "name": "เพิ่มชีส",
+            "price": 0.0
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "name": "ต้มยำกุ้ง",
+      "category": "กับข้าว",
+      "price": 189.0,
+      "image_url": "",
+      "available": true,
+      "spiciness": "เผ็ดมาก",
+      "portion": "ใหญ่",
+      "addons": [],
+      "created_at": "2026-01-10T10:00:00+07:00",
+      "options": {
+        "spiciness": [
+          {
+            "name": "ไม่เผ็ด",
+            "price": 0
+          },
+          {
+            "name": "เผ็ดน้อย",
+            "price": 0
+          },
+          {
+            "name": "เผ็ดกลาง",
+            "price": 0
+          },
+          {
+            "name": "เผ็ดมาก",
+            "price": 0
+          }
+        ],
+        "portion": [
+          {
+            "name": "เล็ก",
+            "price": 0
+          },
+          {
+            "name": "ปกติ",
+            "price": 0
+          },
+          {
+            "name": "ใหญ่",
+            "price": 0
+          }
+        ],
+        "addons": []
+      }
+    },
+    {
+      "id": 4,
+      "name": "ชาไทยเย็น",
+      "category": "เครื่องดื่ม",
+      "price": 55.0,
+      "image_url": "",
+      "available": true,
+      "spiciness": "ไม่เผ็ด",
+      "portion": "ปกติ",
+      "addons": [
+        "หวานน้อย"
+      ],
+      "created_at": "2026-01-10T10:00:00+07:00",
+      "options": {
+        "spiciness": [
+          {
+            "name": "ไม่เผ็ด",
+            "price": 0
+          },
+          {
+            "name": "เผ็ดน้อย",
+            "price": 0
+          },
+          {
+            "name": "เผ็ดกลาง",
+            "price": 0
+          },
+          {
+            "name": "เผ็ดมาก",
+            "price": 0
+          }
+        ],
+        "portion": [
+          {
+            "name": "เล็ก",
+            "price": 0
+          },
+          {
+            "name": "ปกติ",
+            "price": 0
+          },
+          {
+            "name": "ใหญ่",
+            "price": 0
+          }
+        ],
+        "addons": [
+          {
+            "name": "หวานน้อย",
+            "price": 0.0
+          }
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "name": "ข้าวเหนียวมะม่วง",
+      "category": "ของหวาน",
+      "price": 95.0,
+      "image_url": "",
+      "available": false,
+      "spiciness": "ไม่เผ็ด",
+      "portion": "ปกติ",
+      "addons": [],
+      "created_at": "2026-01-10T10:00:00+07:00",
+      "options": {
+        "spiciness": [
+          {
+            "name": "ไม่เผ็ด",
+            "price": 0
+          },
+          {
+            "name": "เผ็ดน้อย",
+            "price": 0
+          },
+          {
+            "name": "เผ็ดกลาง",
+            "price": 0
+          },
+          {
+            "name": "เผ็ดมาก",
+            "price": 0
+          }
+        ],
+        "portion": [
+          {
+            "name": "เล็ก",
+            "price": 0
+          },
+          {
+            "name": "ปกติ",
+            "price": 0
+          },
+          {
+            "name": "ใหญ่",
+            "price": 0
+          }
+        ],
+        "addons": []
+      }
+    }
+  ],
+  "tables": [
+    {
+      "id": 1,
+      "number": 1,
+      "seats": 2,
+      "status": "Vacant"
+    },
+    {
+      "id": 2,
+      "number": 2,
+      "seats": 4,
+      "status": "Vacant"
+    },
+    {
+      "id": 3,
+      "number": 3,
+      "seats": 4,
+      "status": "Vacant"
+    },
+    {
+      "id": 4,
+      "number": 4,
+      "seats": 6,
+      "status": "Vacant"
+    }
+  ],
+  "orders": [
+    {
+      "id": "B78CF706",
+      "table_id": 0,
+      "customer_id": "dccbe9e5-5362-4096-b3ef-a168158b7ca8",
+      "order_type": "online",
+      "items": [],
+      "status": "cancelled",
+      "created_at": "2026-10-05T00:50:16+07:00",
+      "updated_at": "2026-10-05T00:50:16+07:00"
+    },
+    {
+      "id": "A19F6E07",
+      "table_id": 0,
+      "customer_id": "dccbe9e5-5362-4096-b3ef-a168158b7ca8",
+      "order_type": "online",
+      "items": [],
+      "status": "cancelled",
+      "created_at": "2026-10-05T00:52:08+07:00",
+      "updated_at": "2026-10-05T00:52:08+07:00"
+    },
+    {
+      "id": "0A36882C",
+      "table_id": 0,
+      "customer_id": "dccbe9e5-5362-4096-b3ef-a168158b7ca8",
+      "order_type": "online",
+      "items": [
+        {
+          "line_id": "d6f7e320-f991-4301-adfa-b658f7d3b29c",
+          "menu_id": 4,
+          "name": "ชาไทยเย็น",
+          "qty": 1,
+          "base_price": 55.0,
+          "unit_price": 55.0,
+          "options": {
+            "spiciness": "ไม่เผ็ด",
+            "portion": "เล็ก",
+            "addons": []
+          }
+        }
+      ],
+      "status": "cancelled",
+      "created_at": "2026-10-05T01:23:47+07:00",
+      "updated_at": "2026-10-05T01:24:49+07:00"
+    },
+    {
+      "id": "7B56ECF7",
+      "table_id": 0,
+      "customer_id": "dccbe9e5-5362-4096-b3ef-a168158b7ca8",
+      "order_type": "online",
+      "items": [],
+      "status": "cancelled",
+      "created_at": "2026-10-05T01:25:38+07:00",
+      "updated_at": "2026-10-05T01:25:41+07:00"
+    },
+    {
+      "id": "1CD0F22E",
+      "table_id": 0,
+      "customer_id": "dccbe9e5-5362-4096-b3ef-a168158b7ca8",
+      "order_type": "online",
+      "items": [
+        {
+          "line_id": "8570e2e0-ffcb-4950-9b23-0f22e9bc7578",
+          "menu_id": 1,
+          "name": "ข้าวกะเพราไก่ไข่ดาว",
+          "qty": 1,
+          "base_price": 79.0,
+          "unit_price": 94.0,
+          "options": {
+            "spiciness": "ไม่เผ็ด",
+            "portion": "เล็ก",
+            "addons": [
+              "ไข่ดาว",
+              "เพิ่มเนื้อ"
+            ]
+          }
+        }
+      ],
+      "status": "paid",
+      "created_at": "2026-10-05T01:26:56+07:00",
+      "updated_at": "2026-10-05T01:27:15+07:00",
+      "bill": {
+        "subtotal": 94.0,
+        "discount": 0.0,
+        "discount_rate": 0.0,
+        "service": 0.0,
+        "service_rate": 0.0,
+        "vat": 6.58,
+        "vat_rate": 7.0,
+        "total": 100.58
+      },
+      "paid_at": "2026-10-05T01:28:09+07:00"
+    }
+  ],
+  "reservations": [],
+  "queue": [],
+  "audit": [
+    {
+      "id": "d57cad17-e3af-441c-bc0d-08a2e2caa204",
+      "at": "2026-10-05T00:50:08+07:00",
+      "actor": "เทส",
+      "action": "register",
+      "detail": "สมัครสมาชิก"
+    },
+    {
+      "id": "caedccdc-72ec-45e9-bfec-dc6d3cb7431d",
+      "at": "2026-10-05T00:50:16+07:00",
+      "actor": "เทส",
+      "action": "order_item_change",
+      "detail": "ปรับจำนวน ข้าวกะเพราไก่ไข่ดาว ในออเดอร์ B78CF706: +1"
+    },
+    {
+      "id": "c3a08847-a8c2-420e-bc71-0c23f6b6f42e",
+      "at": "2026-10-05T00:50:18+07:00",
+      "actor": "เทส",
+      "action": "order_cancel",
+      "detail": "ยกเลิกออเดอร์ B78CF706 หลังรายการหมด"
+    },
+    {
+      "id": "13d508ef-5c50-4721-a2de-0fc674765877",
+      "at": "2026-10-05T00:52:08+07:00",
+      "actor": "เทส",
+      "action": "order_item_change",
+      "detail": "ปรับจำนวน ข้าวกะเพราไก่ไข่ดาว ในออเดอร์ A19F6E07: +1"
+    },
+    {
+      "id": "c372f79d-5f88-4c3d-a476-8b3894de605d",
+      "at": "2026-10-05T00:52:11+07:00",
+      "actor": "เทส",
+      "action": "order_cancel",
+      "detail": "ยกเลิกออเดอร์ A19F6E07 หลังรายการหมด"
+    },
+    {
+      "id": "085e76e5-64bb-4d27-8d3b-ab65f8d191b2",
+      "at": "2026-10-05T01:23:47+07:00",
+      "actor": "เทส",
+      "action": "online_order_item",
+      "detail": "สั่ง ชาไทยเย็น x1 (ไม่เผ็ด, เล็ก)"
+    },
+    {
+      "id": "919fa692-aa88-401e-a494-922102a107f2",
+      "at": "2026-10-05T01:24:48+07:00",
+      "actor": "admin",
+      "action": "kds_update",
+      "detail": "ออเดอร์ 0A36882C → preparing"
+    },
+    {
+      "id": "9906a410-f67b-4ff0-9ff6-64128e4c4ee8",
+      "at": "2026-10-05T01:24:49+07:00",
+      "actor": "admin",
+      "action": "kds_update",
+      "detail": "ออเดอร์ 0A36882C → ready"
+    },
+    {
+      "id": "2b1d44f4-1a70-43c9-8f20-bae87104dbb6",
+      "at": "2026-10-05T01:24:51+07:00",
+      "actor": "admin",
+      "action": "order_cancel",
+      "detail": "ยกเลิกออเดอร์ 0A36882C"
+    },
+    {
+      "id": "e84d9738-3fdb-4a5f-b489-34307b5c0933",
+      "at": "2026-10-05T01:25:20+07:00",
+      "actor": "admin",
+      "action": "menu_update",
+      "detail": "แก้ไขเมนู ข้าวกะเพราไก่ไข่ดาว"
+    },
+    {
+      "id": "0495036a-9734-4c73-af55-ce66f628bc19",
+      "at": "2026-10-05T01:25:38+07:00",
+      "actor": "เทส",
+      "action": "online_order_item",
+      "detail": "สั่ง ข้าวกะเพราไก่ไข่ดาว x1 (ไม่เผ็ด, ใหญ่)"
+    },
+    {
+      "id": "bc6f61a2-b7b5-4744-92e6-6017b16bcd2c",
+      "at": "2026-10-05T01:25:41+07:00",
+      "actor": "เทส",
+      "action": "online_order_item_change",
+      "detail": "ปรับจำนวนรายการในออเดอร์ 7B56ECF7: -1"
+    },
+    {
+      "id": "a73b4d9c-8ddb-4559-992e-0b91bfa24fda",
+      "at": "2026-10-05T01:26:19+07:00",
+      "actor": "admin",
+      "action": "menu_update",
+      "detail": "แก้ไขเมนู ข้าวกะเพราไก่ไข่ดาว"
+    },
+    {
+      "id": "002cda5c-4f99-4a5e-8069-f1bfea441fc2",
+      "at": "2026-10-05T01:26:56+07:00",
+      "actor": "เทส",
+      "action": "online_order_item",
+      "detail": "สั่ง ข้าวกะเพราไก่ไข่ดาว x1 (ไม่เผ็ด, เล็ก)"
+    },
+    {
+      "id": "48681162-2b14-4322-8530-84cd0879ef35",
+      "at": "2026-10-05T01:27:14+07:00",
+      "actor": "เทส",
+      "action": "online_order_item_change",
+      "detail": "ปรับจำนวนรายการในออเดอร์ 1CD0F22E: +1"
+    },
+    {
+      "id": "c6daf42a-81ef-4e44-8037-f0710fd78ef5",
+      "at": "2026-10-05T01:27:15+07:00",
+      "actor": "เทส",
+      "action": "online_order_item_change",
+      "detail": "ปรับจำนวนรายการในออเดอร์ 1CD0F22E: -1"
+    },
+    {
+      "id": "b2072808-397d-4458-8988-55b98e35fcdc",
+      "at": "2026-10-05T01:28:09+07:00",
+      "actor": "admin",
+      "action": "checkout",
+      "detail": "ชำระออเดอร์ 1CD0F22E: 100.58 บาท"
+    }
+  ],
+  "settings": {
+    "restaurant_name": "อิ่มอร่อย",
+    "opening_days": "ทุกวัน",
+    "opening_hours": "10:00 - 22:00",
+    "welcome_message": "อร่อยง่าย สั่งได้เลย",
+    "featured_menu_ids": [],
+    "hero_title": "อร่อยง่าย สั่งได้เลย",
+    "announcement": "",
+    "logo_url": "",
+    "hero_image_url": "",
+    "primary_color": "#176b50",
+    "accent_color": "#d9ef93",
+    "page_background": "#f6f5ef",
+    "card_style": "rounded",
+    "show_featured": true
+  }
+}
