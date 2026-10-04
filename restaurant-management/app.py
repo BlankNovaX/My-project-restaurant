@@ -81,6 +81,7 @@ def create_app() -> Flask:
                     request.form.get("email"),
                     request.form.get("password"),
                     request.form.get("confirm_password"),
+                    request.form.get("security_answer"),
                 )
                 session["pending_registration"] = pending
                 flash("ตรวจสอบชื่อบัญชี แล้วกดยืนยันเพื่อสร้างบัญชี", "success")
@@ -135,6 +136,58 @@ def create_app() -> Flask:
             except utils.ValidationError as error:
                 handle_validation(error)
         return render_template("auth.html", mode="login")
+
+    @app.route("/password/forgot", methods=["GET", "POST"])
+    def forgot_password():
+        if request.method == "POST":
+            try:
+                utils.reset_user_password(
+                    g.data,
+                    request.form.get("identity"),
+                    request.form.get("security_answer"),
+                    request.form.get("new_password"),
+                    request.form.get("confirm_password"),
+                )
+                flash("เปลี่ยนรหัสผ่านเรียบร้อยแล้ว เข้าสู่ระบบด้วยรหัสผ่านใหม่ได้เลย", "success")
+                return redirect(url_for("login"))
+            except (utils.ValidationError, utils.StorageError) as error:
+                handle_validation(error)
+        return render_template("password_forgot.html")
+
+    @app.route("/account/password", methods=["GET", "POST"])
+    @roles_required("admin", "staff", "customer")
+    def change_password():
+        if request.method == "POST":
+            try:
+                utils.change_user_password(
+                    g.data,
+                    current_user()["id"],
+                    request.form.get("current_password"),
+                    request.form.get("new_password"),
+                    request.form.get("confirm_password"),
+                )
+                flash("เปลี่ยนรหัสผ่านเรียบร้อยแล้ว", "success")
+                return redirect(url_for("dashboard"))
+            except (utils.ValidationError, utils.StorageError) as error:
+                handle_validation(error)
+        return render_template("password_change.html")
+
+    @app.route("/account/recovery-answer", methods=["GET", "POST"])
+    @roles_required("admin", "staff", "customer")
+    def change_recovery_answer():
+        if request.method == "POST":
+            try:
+                utils.update_security_answer(
+                    g.data,
+                    current_user()["id"],
+                    request.form.get("current_password"),
+                    request.form.get("security_answer"),
+                )
+                flash("บันทึกคำตอบยืนยันตัวตนแล้ว", "success")
+                return redirect(url_for("dashboard"))
+            except (utils.ValidationError, utils.StorageError) as error:
+                handle_validation(error)
+        return render_template("recovery_answer.html")
 
     @app.post("/logout")
     @roles_required("admin", "staff", "customer")

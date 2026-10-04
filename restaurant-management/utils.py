@@ -182,8 +182,13 @@ def ensure_demo_users(data: dict[str, Any]) -> bool:
         (os.environ.get("RMS_STAFF_USER", "staff"), "staff", "RMS_STAFF_PASSWORD", "staff1234"),
     ):
         if not any(u.get("username") == username for u in data["users"]):
-            data["users"].append({"id": str(uuid4()), "username": username, "password_hash": generate_password_hash(os.environ.get(env_name, default_password)), "role": role, "created_at": now_iso()})
+            data["users"].append({"id": str(uuid4()), "username": username, "password_hash": generate_password_hash(os.environ.get(env_name, default_password)), "security_answer_hash": generate_password_hash("helloworld"), "role": role, "created_at": now_iso()})
             changed = True
+        else:
+            existing = next(u for u in data["users"] if u.get("username") == username)
+            if existing.get("role") == role and not existing.get("security_answer_hash"):
+                existing["security_answer_hash"] = generate_password_hash("helloworld")
+                changed = True
     if changed:
         if not save_data(data):
             raise StorageError("บันทึกบัญชีเริ่มต้นไม่สำเร็จ")
@@ -323,22 +328,25 @@ def list_records(rows: list[dict[str, Any]], query: str = "", category: str = ""
     return paginate(filtered, page, per_page)
 
 
-def prepare_registration(data: dict[str, Any], username_value: Any, email_value: Any, password_value: Any, confirm_password_value: Any) -> dict[str, str]:
+def prepare_registration(data: dict[str, Any], username_value: Any, email_value: Any, password_value: Any, confirm_password_value: Any, security_answer_value: Any = None) -> dict[str, str]:
     username = normalize_text(username_value, "ชื่อผู้ใช้", 40)
     email = normalize_text(email_value, "อีเมล", 254).casefold()
     password = normalize_text(password_value, "รหัสผ่าน", 128)
     confirm_password = normalize_text(confirm_password_value, "ยืนยันรหัสผ่าน", 128)
+    security_answer = normalize_text(security_answer_value, "คำตอบยืนยันตัวตน", 120).casefold()
     if len(username) < 3 or len(password) < 8:
         raise ValidationError("ชื่อผู้ใช้ต้องยาวอย่างน้อย 3 ตัว และรหัสผ่านอย่างน้อย 8 ตัว")
     if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
         raise ValidationError("รูปแบบอีเมลไม่ถูกต้อง")
     if password != confirm_password:
         raise ValidationError("รหัสผ่านและช่องยืนยันรหัสผ่านไม่ตรงกัน")
+    if len(security_answer) < 2:
+        raise ValidationError("คำตอบยืนยันตัวตนต้องมีอย่างน้อย 2 ตัวอักษร")
     if any(user.get("username", "").casefold() == username.casefold() for user in data["users"]):
         raise ValidationError("ชื่อผู้ใช้นี้ถูกใช้แล้ว")
     if any(user.get("email", "").casefold() == email for user in data["users"] if user.get("email")):
         raise ValidationError("อีเมลนี้ถูกใช้แล้ว")
-    return {"username": username, "email": email, "password_hash": generate_password_hash(password), "created_at": now_iso()}
+    return {"username": username, "email": email, "password_hash": generate_password_hash(password), "security_answer_hash": generate_password_hash(security_answer), "created_at": now_iso()}
 
 
 def complete_registration(data: dict[str, Any], pending: Any) -> dict[str, Any]:
@@ -347,15 +355,18 @@ def complete_registration(data: dict[str, Any], pending: Any) -> dict[str, Any]:
     username = normalize_text(pending.get("username"), "ชื่อผู้ใช้", 40)
     email = normalize_text(pending.get("email"), "อีเมล", 254).casefold()
     password_hash = pending.get("password_hash")
+    security_answer_hash = pending.get("security_answer_hash")
     if not isinstance(password_hash, str) or len(password_hash) > 512:
         raise ValidationError("ข้อมูลยืนยันสมัครไม่ถูกต้อง กรุณาเริ่มใหม่")
+    if not isinstance(security_answer_hash, str) or len(security_answer_hash) > 512:
+        raise ValidationError("ไม่พบคำตอบยืนยันตัวตน กรุณาสมัครใหม่")
     if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
         raise ValidationError("รูปแบบอีเมลไม่ถูกต้อง")
     if any(user.get("username", "").casefold() == username.casefold() for user in data["users"]):
         raise ValidationError("ชื่อผู้ใช้นี้ถูกใช้แล้ว กรุณาสมัครด้วยชื่ออื่น")
     if any(user.get("email", "").casefold() == email for user in data["users"] if user.get("email")):
         raise ValidationError("อีเมลนี้ถูกใช้แล้ว กรุณาสมัครด้วยอีเมลอื่น")
-    user = {"id": str(uuid4()), "username": username, "email": email, "password_hash": password_hash, "role": "customer", "created_at": now_iso()}
+    user = {"id": str(uuid4()), "username": username, "email": email, "password_hash": password_hash, "security_answer_hash": security_answer_hash, "role": "customer", "created_at": now_iso()}
     data["users"].append(user)
     audit(data, username, "register", "สมัครสมาชิก")
     if not save_data(data):
@@ -376,6 +387,59 @@ def authenticate(data: dict[str, Any], username_value: Any, password_value: Any)
     if user and user.get("role") in ROLES and check_password_hash(user.get("password_hash", ""), password):
         return user
     return None
+
+
+def change_user_password(data: dict[str, Any], user_id: Any, current_password_value: Any, new_password_value: Any, confirm_password_value: Any) -> None:
+    user = next((row for row in data.get("users", []) if str(row.get("id")) == str(user_id)), None)
+    if not user:
+        raise ValidationError("ไม่พบบัญชีผู้ใช้")
+    current_password = normalize_text(current_password_value, "รหัสผ่านปัจจุบัน", 128)
+    new_password = normalize_text(new_password_value, "รหัสผ่านใหม่", 128)
+    confirm_password = normalize_text(confirm_password_value, "ยืนยันรหัสผ่านใหม่", 128)
+    if not check_password_hash(user.get("password_hash", ""), current_password):
+        raise ValidationError("รหัสผ่านปัจจุบันไม่ถูกต้อง")
+    if len(new_password) < 8:
+        raise ValidationError("รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร")
+    if new_password != confirm_password:
+        raise ValidationError("รหัสผ่านใหม่และช่องยืนยันไม่ตรงกัน")
+    user["password_hash"] = generate_password_hash(new_password)
+    audit(data, user.get("username", "unknown"), "password_change", "เปลี่ยนรหัสผ่าน")
+    if not save_data(data):
+        raise StorageError("บันทึกการเปลี่ยนรหัสผ่านไม่สำเร็จ กรุณาลองใหม่")
+
+
+def reset_user_password(data: dict[str, Any], identity_value: Any, answer_value: Any, new_password_value: Any, confirm_password_value: Any) -> None:
+    identity = normalize_text(identity_value, "ชื่อผู้ใช้หรืออีเมล", 254).casefold()
+    answer = normalize_text(answer_value, "คำตอบยืนยันตัวตน", 120).casefold()
+    new_password = normalize_text(new_password_value, "รหัสผ่านใหม่", 128)
+    confirm_password = normalize_text(confirm_password_value, "ยืนยันรหัสผ่านใหม่", 128)
+    if len(new_password) < 8:
+        raise ValidationError("รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร")
+    if new_password != confirm_password:
+        raise ValidationError("รหัสผ่านใหม่และช่องยืนยันไม่ตรงกัน")
+    user = next((row for row in data.get("users", []) if row.get("username", "").casefold() == identity or row.get("email", "").casefold() == identity), None)
+    if not user or not user.get("security_answer_hash") or not check_password_hash(user["security_answer_hash"], answer):
+        raise ValidationError("ข้อมูลยืนยันตัวตนไม่ถูกต้อง กรุณาตรวจสอบชื่อบัญชีและคำตอบ")
+    user["password_hash"] = generate_password_hash(new_password)
+    audit(data, user.get("username", "unknown"), "password_reset", "รีเซ็ตรหัสผ่านด้วยคำตอบยืนยันตัวตน")
+    if not save_data(data):
+        raise StorageError("บันทึกรหัสผ่านใหม่ไม่สำเร็จ กรุณาลองใหม่")
+
+
+def update_security_answer(data: dict[str, Any], user_id: Any, current_password_value: Any, answer_value: Any) -> None:
+    user = next((row for row in data.get("users", []) if str(row.get("id")) == str(user_id)), None)
+    if not user:
+        raise ValidationError("ไม่พบบัญชีผู้ใช้")
+    current_password = normalize_text(current_password_value, "รหัสผ่านปัจจุบัน", 128)
+    answer = normalize_text(answer_value, "คำตอบยืนยันตัวตน", 120).casefold()
+    if not check_password_hash(user.get("password_hash", ""), current_password):
+        raise ValidationError("รหัสผ่านปัจจุบันไม่ถูกต้อง")
+    if len(answer) < 2:
+        raise ValidationError("คำตอบยืนยันตัวตนต้องมีอย่างน้อย 2 ตัวอักษร")
+    user["security_answer_hash"] = generate_password_hash(answer)
+    audit(data, user.get("username", "unknown"), "security_answer_change", "ตั้งหรือเปลี่ยนคำตอบยืนยันตัวตน")
+    if not save_data(data):
+        raise StorageError("บันทึกคำตอบยืนยันตัวตนไม่สำเร็จ กรุณาลองใหม่")
 
 
 def parse_option_lines(value: Any, label: str, required: bool = True) -> list[dict[str, Any]]:
