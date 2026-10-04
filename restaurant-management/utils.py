@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import math
 import os
 import re
@@ -24,7 +25,7 @@ ROLES = {"admin", "staff", "customer"}
 TABLE_STATUSES = {"Vacant", "Occupied", "Awaiting Checkout"}
 ORDER_STATUSES = {"active", "preparing", "ready", "paid", "cancelled"}
 DEFAULT_MENU_OPTIONS = {
-    "spiciness": [("ไม่เผ็ด", 0), ("เผ็ดน้อย", 0), ("เผ็ดกลาง", 0), ("เผ็ดมาก", 0)],
+    "spiciness": [("ระดับ 0 · ไม่เผ็ด", 0), ("ระดับ 1 · เผ็ดน้อย", 0), ("ระดับ 2 · เผ็ดกลาง", 0), ("ระดับ 3 · เผ็ดมาก", 0), ("ระดับ 4 · เผ็ดพิเศษ", 0)],
     "portion": [("เล็ก", 0), ("ปกติ", 0), ("ใหญ่", 0)],
     "addons": [],
 }
@@ -103,6 +104,14 @@ def apply_schema_defaults(data: dict[str, Any]) -> bool:
                 if not isinstance(item["options"].get(key), list):
                     legacy_addons = item.get("addons", [])
                     item["options"][key] = ([{"name": str(name), "price": 0.0} for name in legacy_addons if isinstance(name, str)] if key == "addons" else [{"name": name, "price": price} for name, price in values])
+                    changed = True
+            legacy_spice_levels = {"ไม่เผ็ด": "ระดับ 0 · ไม่เผ็ด", "เผ็ดน้อย": "ระดับ 1 · เผ็ดน้อย", "เผ็ดกลาง": "ระดับ 2 · เผ็ดกลาง", "เผ็ดมาก": "ระดับ 3 · เผ็ดมาก"}
+            if item.get("spiciness") in legacy_spice_levels:
+                item["spiciness"] = legacy_spice_levels[item["spiciness"]]
+                changed = True
+            for option in item["options"].get("spiciness", []):
+                if isinstance(option, dict) and option.get("name") in legacy_spice_levels:
+                    option["name"] = legacy_spice_levels[option["name"]]
                     changed = True
     return changed
 
@@ -199,7 +208,28 @@ def update_restaurant_name(data: dict[str, Any], name_value: Any, actor: str) ->
     return update_restaurant_profile(data, {"restaurant_name": name_value}, actor)["restaurant_name"]
 
 
-def update_restaurant_profile(data: dict[str, Any], form: Any, actor: str) -> dict[str, Any]:
+def _logo_data_url(upload: Any) -> str:
+    try:
+        raw = upload.read(512 * 1024 + 1)
+    except (OSError, ValueError) as error:
+        raise ValidationError("อ่านไฟล์โลโก้ไม่สำเร็จ กรุณาเลือกไฟล์ใหม่") from error
+    if len(raw) > 512 * 1024:
+        raise ValidationError("ไฟล์โลโก้มีขนาดใหญ่เกินไป (สูงสุด 512 KB)")
+    signatures = (
+        (b"\x89PNG\r\n\x1a\n", "image/png"),
+        (b"\xff\xd8\xff", "image/jpeg"),
+        (b"GIF87a", "image/gif"),
+        (b"GIF89a", "image/gif"),
+    )
+    content_type = next((mime for signature, mime in signatures if raw.startswith(signature)), None)
+    if not content_type and len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        content_type = "image/webp"
+    if not content_type:
+        raise ValidationError("ไฟล์โลโก้ต้องเป็น PNG, JPG, GIF หรือ WEBP ที่ถูกต้อง")
+    return f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+def update_restaurant_profile(data: dict[str, Any], form: Any, actor: str, logo_upload: Any = None) -> dict[str, Any]:
     settings = data.setdefault("settings", {})
     name = normalize_text(form.get("restaurant_name", settings.get("restaurant_name", "อิ่มอร่อย")), "ชื่อร้าน", 80)
     opening_days = normalize_text(form.get("opening_days", settings.get("opening_days", "ทุกวัน")), "วันเปิดร้าน", 100)
@@ -207,9 +237,17 @@ def update_restaurant_profile(data: dict[str, Any], form: Any, actor: str) -> di
     welcome_message = normalize_text(form.get("welcome_message", settings.get("welcome_message", "อร่อยง่าย สั่งได้เลย")), "ข้อความหน้าร้าน", 160)
     hero_title = normalize_text(form.get("hero_title", settings.get("hero_title", "")), "หัวข้อหน้าร้าน", 80, required=False)
     announcement = normalize_text(form.get("announcement", settings.get("announcement", "")), "ข้อความประกาศ", 200, required=False)
-    logo_url = normalize_text(form.get("logo_url", settings.get("logo_url", "")), "URL โลโก้", 500, required=False)
+    if parse_bool(form.get("remove_logo", "false"), "ลบโลโก้"):
+        logo_url = ""
+    elif logo_upload is not None and getattr(logo_upload, "filename", ""):
+        logo_url = _logo_data_url(logo_upload)
+    else:
+        stored_logo = settings.get("logo_url", "")
+        logo_url = stored_logo if isinstance(stored_logo, str) else ""
     hero_image_url = normalize_text(form.get("hero_image_url", settings.get("hero_image_url", "")), "URL ภาพปก", 500, required=False)
-    for label, image_url in (("โลโก้", logo_url), ("ภาพปก", hero_image_url)):
+    if logo_url and not logo_url.startswith("data:image/") and len(logo_url) > 500:
+        raise ValidationError("ข้อมูลโลโก้ไม่ถูกต้อง")
+    for label, image_url in (("โลโก้", logo_url if not logo_url.startswith("data:image/") else ""), ("ภาพปก", hero_image_url)):
         if image_url and not re.fullmatch(r"https?://[^\s<>\"']+", image_url, flags=re.IGNORECASE):
             raise ValidationError(f"URL {label} ต้องเป็นลิงก์ http:// หรือ https:// ที่ถูกต้อง")
     colors = {}
@@ -475,10 +513,10 @@ def save_menu_item(data: dict[str, Any], form: Any, actor: str, item_id: str | N
     if image_url and not image_url.startswith(("https://", "http://")):
         raise ValidationError("URL รูปภาพต้องขึ้นต้นด้วย http:// หรือ https://")
     available = parse_bool(form.get("available", "false"), "สถานะพร้อมขาย")
-    spiciness = normalize_text(form.get("spiciness", "ไม่เผ็ด"), "ระดับ", 20)
+    spiciness = normalize_text(form.get("spiciness", "ระดับ 0 · ไม่เผ็ด"), "ระดับความเผ็ด", 20)
     portion = normalize_text(form.get("portion", "ปกติ"), "ขนาด", 20)
     options = {
-        "spiciness": parse_option_lines(form.get("spiciness_options", "ไม่เผ็ด|0\nเผ็ดน้อย|0\nเผ็ดกลาง|0\nเผ็ดมาก|0"), "ระดับ"),
+        "spiciness": parse_option_lines(form.get("spiciness_options", "ระดับ 0 · ไม่เผ็ด|0\nระดับ 1 · เผ็ดน้อย|0\nระดับ 2 · เผ็ดกลาง|0\nระดับ 3 · เผ็ดมาก|0\nระดับ 4 · เผ็ดพิเศษ|0"), "ระดับความเผ็ด"),
         "portion": parse_option_lines(form.get("portion_options", "เล็ก|0\nปกติ|0\nใหญ่|0"), "ขนาด"),
         "addons": parse_option_lines(form.get("addon_options", ""), "ท็อปปิ้ง", required=False),
     }
@@ -598,7 +636,7 @@ def create_customer_order(data: dict[str, Any], customer: dict[str, Any], menu_i
         portion_value = selections.get("portion")
     else:
         addons_value, spicy_value, portion_value = [], None, None
-    spicy = _selected_option(configured.get("spiciness", []), spicy_value or menu.get("spiciness"), "ระดับ")
+    spicy = _selected_option(configured.get("spiciness", []), spicy_value or menu.get("spiciness"), "ระดับความเผ็ด")
     portion = _selected_option(configured.get("portion", []), portion_value or menu.get("portion"), "ขนาด")
     if not spicy_value:
         spicy = configured.get("spiciness", [spicy])[0]

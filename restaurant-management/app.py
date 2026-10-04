@@ -414,7 +414,7 @@ def create_app() -> Flask:
     def settings():
         if request.method == "POST":
             try:
-                utils.update_restaurant_profile(g.data, request.form, current_user()["username"])
+                utils.update_restaurant_profile(g.data, request.form, current_user()["username"], request.files.get("logo_file"))
                 flash("บันทึกข้อมูลและหน้าตกแต่งร้านแล้ว", "success")
                 return redirect(url_for("settings"))
             except utils.ValidationError as error:
@@ -483,6 +483,10 @@ def create_app() -> Flask:
             flash("ไม่พบเมนูหรือหน้าที่เลือก กลับสู่หน้าหลักแล้ว", "warning")
             return redirect(url_for("index"))
         return render_template("error.html", code=404, message="ไม่พบหน้าหรือข้อมูลที่ต้องการ"), 404
+
+    @app.errorhandler(413)
+    def request_too_large(_error):
+        return render_template("error.html", code=413, message="ไฟล์ที่อัปโหลดมีขนาดใหญ่เกินกำหนด กรุณาเลือกไฟล์โลโก้ไม่เกิน 512 KB"), 413
 
     @app.errorhandler(500)
     def server_error(_error):
