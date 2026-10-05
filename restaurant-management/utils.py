@@ -25,7 +25,7 @@ REDIS_DATA_KEY = os.environ.get("RMS_REDIS_DATA_KEY", "restaurant-management:dat
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 ROLES = {"admin", "staff", "customer"}
 TABLE_STATUSES = {"Vacant", "Occupied", "Awaiting Checkout"}
-ORDER_STATUSES = {"active", "preparing", "ready", "payment_pending", "paid", "cancelled"}
+ORDER_STATUSES = {"active", "preparing", "ready", "served", "payment_pending", "paid", "cancelled"}
 DEFAULT_MENU_OPTIONS = {
     "spiciness": [("ระดับ 0 · ไม่เผ็ด", 0), ("ระดับ 1 · เผ็ดน้อย", 0), ("ระดับ 2 · เผ็ดกลาง", 0), ("ระดับ 3 · เผ็ดมาก", 0), ("ระดับ 4 · เผ็ดพิเศษ", 0)],
     "portion": [("เล็ก", 0), ("ปกติ", 0), ("ใหญ่", 0)],
@@ -1162,11 +1162,12 @@ def cancel_order(data: dict[str, Any], order_id: str, actor: str) -> None:
 def update_order_status(data: dict[str, Any], order_id: str, status_value: Any, actor: str) -> dict[str, Any]:
     status = normalize_text(status_value, "สถานะออเดอร์", 20)
     order = find_by_id(data["orders"], order_id)
-    if status not in {"preparing", "ready"} or not order or order.get("status") in {"paid", "cancelled"} or not order.get("items"):
+    transitions = {"active": "preparing", "preparing": "ready", "ready": "served"}
+    if not order or transitions.get(order.get("status")) != status or not order.get("items"):
         raise ValidationError("เปลี่ยนสถานะออเดอร์ไม่ได้")
     order["status"] = status
     order["updated_at"] = now_iso()
-    if status == "ready" and order["items"]:
+    if status in {"ready", "served"} and order["items"]:
         table = find_by_id(data["tables"], order["table_id"])
         if table:
             table["status"] = "Awaiting Checkout"
@@ -1177,7 +1178,8 @@ def update_order_status(data: dict[str, Any], order_id: str, status_value: Any, 
     else:
         order["status"] = "active"
     audit(data, actor, "kds_update", f"ออเดอร์ {order_id} → {status}")
-    notify_customer(data, order, "อัปเดตสถานะออเดอร์", f"ออเดอร์ #{order_id}: {'เริ่มเตรียมอาหาร' if status == 'preparing' else 'อาหารพร้อมแล้ว'}")
+    status_message = {"preparing": "ร้านเริ่มเตรียมอาหารแล้ว", "ready": "ครัวทำอาหารเสร็จแล้ว กำลังจัดเสิร์ฟ", "served": "พนักงานเสิร์ฟอาหารถึงโต๊ะแล้ว"}[status]
+    notify_customer(data, order, "อัปเดตสถานะออเดอร์", f"ออเดอร์ #{order_id}: {status_message}")
     if not save_data(data):
         raise ValidationError("บันทึกสถานะออเดอร์ไม่สำเร็จ กรุณาลองใหม่")
     return order
@@ -1225,8 +1227,8 @@ def customer_table_checkout_preview(data: dict[str, Any], customer: dict[str, An
     if not table:
         raise ValidationError("ไม่พบโต๊ะที่กำลังใช้งาน")
     orders = [order for order in data.get("orders", []) if str(order.get("customer_id")) == str(customer["id"]) and str(order.get("table_id")) == str(table["id"]) and order.get("order_type") == "dine_in" and order.get("status") not in {"paid", "cancelled"}]
-    if any(order.get("status") not in {"ready", "payment_pending"} for order in orders):
-        raise ValidationError("ยังมีออเดอร์ที่ร้านกำลังเตรียมหรือยังไม่พร้อม กรุณารอให้ร้านทำอาหารเสร็จก่อน checkout")
+    if any(order.get("status") not in {"served", "payment_pending"} for order in orders):
+        raise ValidationError("รอให้พนักงานนำอาหารไปเสิร์ฟถึงโต๊ะก่อน แล้วจึงขอชำระเงินได้")
     bills = [{"order": order, "bill": calculate_bill(order)} for order in orders]
     return {"reservation": reservation, "table": table, "bills": bills, "total": round(sum(row["bill"]["total"] for row in bills), 2)}
 
@@ -1234,7 +1236,7 @@ def customer_table_checkout_preview(data: dict[str, Any], customer: dict[str, An
 def customer_table_checkout(data: dict[str, Any], customer: dict[str, Any]) -> dict[str, Any]:
     preview = customer_table_checkout_preview(data, customer)
     pending = [row for row in preview["bills"] if row["order"].get("status") == "payment_pending"]
-    ready = [row for row in preview["bills"] if row["order"].get("status") == "ready"]
+    ready = [row for row in preview["bills"] if row["order"].get("status") == "served"]
     if pending and not ready:
         raise ValidationError("ส่งคำขอชำระเงินแล้ว กรุณารอร้านตรวจสอบ")
     for row in ready:
