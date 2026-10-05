@@ -1,0 +1,10 @@
+{% extends 'base.html' %}
+{% block title %}ตะกร้าออเดอร์{% endblock %}
+{% block content %}
+<div class="section-head"><div><div class="eyebrow">โต๊ะ {{ table.number if table else '?' }}</div><h1>ตรวจรายการก่อนส่งร้าน</h1><p class="muted">ปรับจำนวนหรือลบรายการได้ ก่อนยืนยันส่งออเดอร์ให้ครัว</p></div><a class="btn secondary" href="{{ url_for('menu_list') }}">เลือกเมนูเพิ่ม</a></div>
+{% if cart %}
+<section class="card table-scroll"><table><thead><tr><th>เมนูและตัวเลือก</th><th>ราคา/จาน</th><th>จำนวน</th><th>รวม</th></tr></thead><tbody>
+{% for line in cart %}<tr><td><strong>{{ line.name }}</strong><div class="muted">{{ line.options.spiciness }} · {{ line.options.portion }}{% if line.options.addons %} · เพิ่ม {{ line.options.addons|join(', ') }}{% endif %}</div></td><td>{{ currency }}{{ '%.2f'|format(line.unit_price) }}</td><td><form method="post" action="{{ url_for('customer_cart_update') }}" class="actions"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="line_id" value="{{ line.line_id }}"><input type="number" name="quantity" value="{{ line.qty }}" min="0" max="50" style="width:80px"><button class="small secondary">ปรับ</button></form></td><td>{{ currency }}{{ '%.2f'|format(line.unit_price * line.qty) }}</td></tr>{% endfor %}
+</tbody></table><div class="receipt-line total"><span>ยอดรวมโดยประมาณ</span><span>{{ currency }}{{ '%.2f'|format(total) }}</span></div><p class="muted">ราคาอาจเปลี่ยนหากร้านปรับเมนูก่อนยืนยัน ระบบจะตรวจสอบราคาอีกครั้งตอนส่งออเดอร์</p><form method="post" action="{{ url_for('customer_cart_confirm') }}" onsubmit="return confirm('ยืนยันส่งรายการทั้งหมดให้ร้านหรือไม่?')"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button>ยืนยันส่งออเดอร์ให้ร้าน</button></form></section>
+{% else %}<section class="card empty">ยังไม่มีเมนูในตะกร้า <a href="{{ url_for('menu_list') }}">กลับไปเลือกเมนู</a></section>{% endif %}
+{% endblock %}

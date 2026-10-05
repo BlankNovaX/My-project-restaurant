@@ -33,7 +33,7 @@
       "price": 79.0,
       "image_url": "https://www.unileverfoodsolutions.co.th/dam/global-ufs/mcos/SEA/calcmenu/recipes/TH-recipes/chicken-&-other-poultry-dishes/%E0%B8%81%E0%B8%B0%E0%B9%80%E0%B8%9E%E0%B8%A3%E0%B8%B2%E0%B9%84%E0%B8%81%E0%B9%88%E0%B9%84%E0%B8%82%E0%B9%88%E0%B8%94%E0%B8%B2%E0%B8%A7/%E0%B8%81%E0%B8%B0%E0%B9%80%E0%B8%9E%E0%B8%A3%E0%B8%B2%E0%B9%84%E0%B8%81%E0%B9%88%E0%B9%84%E0%B8%82%E0%B9%88%E0%B8%94%E0%B8%B2%E0%B8%A7_header.jpg",
       "available": true,
-      "spiciness": "ไม่เผ็ด",
+      "spiciness": "ระดับ 0 · ไม่เผ็ด",
       "portion": "ปกติ",
       "addons": [
         "ไข่ดาว",
@@ -43,19 +43,19 @@
       "options": {
         "spiciness": [
           {
-            "name": "ไม่เผ็ด",
+            "name": "ระดับ 0 · ไม่เผ็ด",
             "price": 0.0
           },
           {
-            "name": "เผ็ดน้อย",
+            "name": "ระดับ 1 · เผ็ดน้อย",
             "price": 0.0
           },
           {
-            "name": "เผ็ดกลาง",
+            "name": "ระดับ 2 · เผ็ดกลาง",
             "price": 0.0
           },
           {
-            "name": "เผ็ดมาก",
+            "name": "ระดับ 3 · เผ็ดมาก",
             "price": 0.0
           }
         ],
@@ -92,7 +92,7 @@
       "price": 119.0,
       "image_url": "",
       "available": true,
-      "spiciness": "ไม่เผ็ด",
+      "spiciness": "ระดับ 0 · ไม่เผ็ด",
       "portion": "ปกติ",
       "addons": [
         "เพิ่มชีส"
@@ -101,19 +101,19 @@
       "options": {
         "spiciness": [
           {
-            "name": "ไม่เผ็ด",
+            "name": "ระดับ 0 · ไม่เผ็ด",
             "price": 0
           },
           {
-            "name": "เผ็ดน้อย",
+            "name": "ระดับ 1 · เผ็ดน้อย",
             "price": 0
           },
           {
-            "name": "เผ็ดกลาง",
+            "name": "ระดับ 2 · เผ็ดกลาง",
             "price": 0
           },
           {
-            "name": "เผ็ดมาก",
+            "name": "ระดับ 3 · เผ็ดมาก",
             "price": 0
           }
         ],
@@ -146,26 +146,26 @@
       "price": 189.0,
       "image_url": "",
       "available": true,
-      "spiciness": "เผ็ดมาก",
+      "spiciness": "ระดับ 3 · เผ็ดมาก",
       "portion": "ใหญ่",
       "addons": [],
       "created_at": "2026-01-10T10:00:00+07:00",
       "options": {
         "spiciness": [
           {
-            "name": "ไม่เผ็ด",
+            "name": "ระดับ 0 · ไม่เผ็ด",
             "price": 0
           },
           {
-            "name": "เผ็ดน้อย",
+            "name": "ระดับ 1 · เผ็ดน้อย",
             "price": 0
           },
           {
-            "name": "เผ็ดกลาง",
+            "name": "ระดับ 2 · เผ็ดกลาง",
             "price": 0
           },
           {
-            "name": "เผ็ดมาก",
+            "name": "ระดับ 3 · เผ็ดมาก",
             "price": 0
           }
         ],
@@ -193,7 +193,7 @@
       "price": 55.0,
       "image_url": "",
       "available": true,
-      "spiciness": "ไม่เผ็ด",
+      "spiciness": "ระดับ 0 · ไม่เผ็ด",
       "portion": "ปกติ",
       "addons": [
         "หวานน้อย"
@@ -202,19 +202,19 @@
       "options": {
         "spiciness": [
           {
-            "name": "ไม่เผ็ด",
+            "name": "ระดับ 0 · ไม่เผ็ด",
             "price": 0
           },
           {
-            "name": "เผ็ดน้อย",
+            "name": "ระดับ 1 · เผ็ดน้อย",
             "price": 0
           },
           {
-            "name": "เผ็ดกลาง",
+            "name": "ระดับ 2 · เผ็ดกลาง",
             "price": 0
           },
           {
-            "name": "เผ็ดมาก",
+            "name": "ระดับ 3 · เผ็ดมาก",
             "price": 0
           }
         ],
@@ -247,26 +247,26 @@
       "price": 95.0,
       "image_url": "",
       "available": false,
-      "spiciness": "ไม่เผ็ด",
+      "spiciness": "ระดับ 0 · ไม่เผ็ด",
       "portion": "ปกติ",
       "addons": [],
       "created_at": "2026-01-10T10:00:00+07:00",
       "options": {
         "spiciness": [
           {
-            "name": "ไม่เผ็ด",
+            "name": "ระดับ 0 · ไม่เผ็ด",
             "price": 0
           },
           {
-            "name": "เผ็ดน้อย",
+            "name": "ระดับ 1 · เผ็ดน้อย",
             "price": 0
           },
           {
-            "name": "เผ็ดกลาง",
+            "name": "ระดับ 2 · เผ็ดกลาง",
             "price": 0
           },
           {
-            "name": "เผ็ดมาก",
+            "name": "ระดับ 3 · เผ็ดมาก",
             "price": 0
           }
         ],
@@ -560,5 +560,6 @@
     "page_background": "#f6f5ef",
     "card_style": "rounded",
     "show_featured": true
-  }
+  },
+  "carts": {}
 }

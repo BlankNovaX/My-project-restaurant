@@ -33,7 +33,13 @@ def create_app() -> Flask:
     def shared_template_values():
         settings = getattr(g, "data", {}).get("settings", {})
         primary = settings.get("primary_color", "#176b50")
-        return {"current_user": current_user(), "csrf_token": session.get("csrf_token", ""), "currency": "฿", "restaurant_name": settings.get("restaurant_name", "อิ่มอร่อย"), "store_settings": settings, "primary_text_color": utils.contrasting_text_color(primary), "storage_warning": utils.uses_ephemeral_storage()}
+        user = current_user()
+        reservation = utils.active_customer_reservation(g.data, user["id"]) if user and user.get("role") == "customer" else None
+        table = utils.find_by_id(g.data.get("tables", []), reservation.get("table_id")) if reservation and reservation.get("status") == "seated" else None
+        queue_position = utils.reservation_queue_position(g.data, reservation)
+        cart_count = sum(int(line.get("qty", 0)) for line in utils.customer_cart(g.data, user["id"])) if user and user.get("role") == "customer" else 0
+        table_label = f"โต๊ะ {table['number']} · {reservation['party_size']} คน" if table else (f"รอคิว #{queue_position} · {reservation['party_size']} คน" if reservation else "")
+        return {"current_user": user, "csrf_token": session.get("csrf_token", ""), "currency": "฿", "restaurant_name": settings.get("restaurant_name", "อิ่มอร่อย"), "store_settings": settings, "primary_text_color": utils.contrasting_text_color(primary), "storage_warning": utils.uses_ephemeral_storage(), "customer_reservation": reservation, "customer_table": table, "customer_queue_position": queue_position, "customer_cart_count": cart_count, "customer_table_label": table_label}
 
     def current_user():
         identity = session.get("identity")
@@ -207,7 +213,7 @@ def create_app() -> Flask:
             featured = [item for item in g.data["menu_items"] if str(item.get("id")) in {str(item_id) for item_id in featured_ids}]
             if not featured:
                 featured = [item for item in g.data["menu_items"] if item.get("available")][:3]
-            return render_template("customer.html", listing=listing, categories=sorted({i["category"] for i in g.data["menu_items"]}), settings=settings, featured=featured)
+            return render_template("customer.html", listing=listing, categories=sorted({i["category"] for i in g.data["menu_items"]}), settings=settings, featured=featured, max_table_capacity=utils.maximum_table_capacity(g.data))
         report = utils.daily_report(g.data)
         active_orders = [o for o in g.data["orders"] if o.get("status") not in {"paid", "cancelled"}]
         active_orders.sort(key=lambda o: o.get("created_at", ""))
@@ -224,7 +230,7 @@ def create_app() -> Flask:
             featured = [item for item in g.data["menu_items"] if str(item.get("id")) in {str(item_id) for item_id in featured_ids}]
             if not featured:
                 featured = [item for item in g.data["menu_items"] if item.get("available")][:3]
-            return render_template("customer.html", listing=listing, categories=sorted({i["category"] for i in g.data["menu_items"]}), settings=settings, featured=featured)
+            return render_template("customer.html", listing=listing, categories=sorted({i["category"] for i in g.data["menu_items"]}), settings=settings, featured=featured, max_table_capacity=utils.maximum_table_capacity(g.data))
         return render_template("menu.html", listing=listing, categories=sorted({i["category"] for i in g.data["menu_items"]}), can_edit=user["role"] in {"admin", "staff"})
 
     @app.route("/menu/new", methods=["GET", "POST"])
@@ -288,7 +294,7 @@ def create_app() -> Flask:
                 return redirect(url_for("tables"))
             except utils.ValidationError as error:
                 handle_validation(error)
-        return render_template("tables.html", tables=sorted(g.data["tables"], key=lambda t: t["number"], reverse=request.args.get("direction") == "desc"), orders=g.data["orders"])
+        return render_template("tables.html", tables=sorted(g.data["tables"], key=lambda t: t["number"], reverse=request.args.get("direction") == "desc"), orders=g.data["orders"], reservations=sorted(g.data.get("reservations", []), key=lambda r: r.get("created_at", ""), reverse=True), queue=g.data.get("queue", []))
 
     @app.post("/tables/<int:table_id>/edit")
     @roles_required("admin", "staff")
@@ -421,11 +427,65 @@ def create_app() -> Flask:
                 handle_validation(error)
         return render_template("settings.html", settings=g.data.get("settings", {}), menu_items=g.data["menu_items"])
 
+    @app.post("/reservations")
+    @roles_required("customer")
+    def customer_reserve_table():
+        try:
+            result = utils.create_customer_reservation(g.data, current_user(), request.form.get("party_size"))
+            flash(result["message"], "success")
+        except utils.ValidationError as error:
+            handle_validation(error)
+        return redirect(url_for("dashboard"))
+
+    @app.post("/reservations/cancel")
+    @roles_required("customer")
+    def customer_reservation_cancel():
+        try:
+            utils.cancel_customer_reservation(g.data, current_user())
+            flash("ยกเลิกคิวแล้ว", "success")
+        except utils.ValidationError as error:
+            handle_validation(error)
+        return redirect(url_for("dashboard"))
+
+    @app.get("/my-orders/cart")
+    @roles_required("customer")
+    def customer_cart():
+        customer = current_user()
+        reservation = utils.active_customer_reservation(g.data, customer["id"])
+        if not reservation or reservation.get("status") != "seated":
+            flash("ต้องได้โต๊ะก่อนจึงจะยืนยันออเดอร์ได้", "warning")
+            return redirect(url_for("dashboard"))
+        cart = utils.customer_cart(g.data, customer["id"])
+        total = round(sum(float(line.get("unit_price", 0)) * int(line.get("qty", 0)) for line in cart), 2)
+        return render_template("customer_cart.html", cart=cart, total=total, table=utils.find_by_id(g.data["tables"], reservation["table_id"]))
+
+    @app.post("/my-orders/cart/update")
+    @roles_required("customer")
+    def customer_cart_update():
+        try:
+            utils.update_customer_cart_item(g.data, current_user(), request.form.get("line_id"), request.form.get("quantity"))
+            flash("อัปเดตตะกร้าแล้ว", "success")
+        except utils.ValidationError as error:
+            handle_validation(error)
+        return redirect(url_for("customer_cart"))
+
+    @app.post("/my-orders/cart/confirm")
+    @roles_required("customer")
+    def customer_cart_confirm():
+        try:
+            reservation = utils.active_customer_reservation(g.data, current_user()["id"])
+            order = utils.create_customer_table_order(g.data, current_user(), reservation)
+            flash(f"ยืนยันและส่งออเดอร์ #{order['id']} ให้ร้านแล้ว", "success")
+            return redirect(url_for("customer_orders"))
+        except utils.ValidationError as error:
+            handle_validation(error)
+            return redirect(url_for("customer_cart"))
+
     @app.get("/my-orders")
     @roles_required("customer")
     def customer_orders():
         user = current_user()
-        own_orders = [o for o in g.data["orders"] if str(o.get("customer_id")) == str(user["id"]) and o.get("order_type") == "online"]
+        own_orders = [o for o in g.data["orders"] if str(o.get("customer_id")) == str(user["id"]) and o.get("order_type") in {"online", "dine_in"}]
         own_orders.sort(key=lambda o: o.get("created_at", ""), reverse=True)
         return render_template("customer_orders.html", orders=own_orders, order_total=utils.order_total)
 
@@ -434,7 +494,7 @@ def create_app() -> Flask:
     def customer_order_detail(order_id):
         user = current_user()
         order = utils.find_by_id(g.data["orders"], order_id)
-        if not order or str(order.get("customer_id")) != str(user["id"]) or order.get("order_type") != "online":
+        if not order or str(order.get("customer_id")) != str(user["id"]) or order.get("order_type") not in {"online", "dine_in"}:
             abort(404)
         return render_template("customer_order.html", order=order, menu=g.data["menu_items"], order_total=utils.order_total)
 
@@ -442,9 +502,27 @@ def create_app() -> Flask:
     @roles_required("customer")
     def customer_order_add():
         try:
-            order = utils.create_customer_order(g.data, current_user(), request.form.get("menu_id"), request.form.get("quantity", 1), request.form)
-            flash("เพิ่มรายการในออเดอร์แล้ว", "success")
-            return redirect(url_for("customer_order_detail", order_id=order["id"]))
+            customer = current_user()
+            reservation = utils.active_customer_reservation(g.data, customer["id"])
+            if not reservation or reservation.get("status") != "seated":
+                raise utils.ValidationError("ต้องได้โต๊ะก่อนจึงจะเลือกเมนูได้")
+            utils.add_customer_cart_item(g.data, customer, request.form.get("menu_id"), request.form.get("quantity", 1), request.form)
+            flash("เพิ่มเมนูลงตะกร้าแล้ว เลือกเมนูอื่นต่อหรือเข้าไปยืนยันออเดอร์", "success")
+            return redirect(url_for("menu_list"))
+        except utils.ValidationError as error:
+            handle_validation(error)
+            return redirect(url_for("dashboard"))
+
+    @app.route("/table/checkout", methods=["GET", "POST"])
+    @roles_required("customer")
+    def customer_table_checkout_page():
+        try:
+            if request.method == "POST":
+                result = utils.customer_table_checkout(g.data, current_user())
+                flash(f"Checkout โต๊ะเรียบร้อย ยอดรวม {result['total']:.2f} บาท โต๊ะว่างแล้ว", "success")
+                return redirect(url_for("dashboard"))
+            preview = utils.customer_table_checkout_preview(g.data, current_user())
+            return render_template("customer_table_checkout.html", preview=preview)
         except utils.ValidationError as error:
             handle_validation(error)
             return redirect(url_for("dashboard"))

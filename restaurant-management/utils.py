@@ -80,7 +80,7 @@ def now_iso() -> str:
 
 
 def empty_data() -> dict[str, Any]:
-    return {"users": [], "menu_items": [], "tables": [], "orders": [], "reservations": [], "queue": [], "audit": [], "settings": {"restaurant_name": "อิ่มอร่อย", "opening_days": "ทุกวัน", "opening_hours": "10:00 - 22:00", "welcome_message": "อร่อยง่าย สั่งได้เลย", "featured_menu_ids": [], "hero_title": "อร่อยง่าย สั่งได้เลย", "announcement": "", "logo_url": "", "hero_image_url": "", "primary_color": "#176b50", "accent_color": "#d9ef93", "page_background": "#f6f5ef", "card_style": "rounded", "show_featured": True}}
+    return {"users": [], "menu_items": [], "tables": [], "orders": [], "reservations": [], "queue": [], "carts": {}, "audit": [], "settings": {"restaurant_name": "อิ่มอร่อย", "opening_days": "ทุกวัน", "opening_hours": "10:00 - 22:00", "welcome_message": "อร่อยง่าย สั่งได้เลย", "featured_menu_ids": [], "hero_title": "อร่อยง่าย สั่งได้เลย", "announcement": "", "logo_url": "", "hero_image_url": "", "primary_color": "#176b50", "accent_color": "#d9ef93", "page_background": "#f6f5ef", "card_style": "rounded", "show_featured": True}}
 
 
 def apply_schema_defaults(data: dict[str, Any]) -> bool:
@@ -548,6 +548,99 @@ def delete_menu_item(data: dict[str, Any], item_id: str, actor: str) -> None:
         raise ValidationError("บันทึกข้อมูลไม่สำเร็จ")
 
 
+def maximum_table_capacity(data: dict[str, Any]) -> int:
+    return max((int(table.get("seats", 0)) for table in data.get("tables", [])), default=0)
+
+
+def active_customer_reservation(data: dict[str, Any], customer_id: Any) -> dict[str, Any] | None:
+    reservations = [row for row in data.get("reservations", []) if str(row.get("customer_id")) == str(customer_id) and row.get("status") in {"seated", "waiting"}]
+    reservations.sort(key=lambda row: row.get("created_at", ""), reverse=True)
+    return reservations[0] if reservations else None
+
+
+def reservation_queue_position(data: dict[str, Any], reservation: dict[str, Any] | None) -> int | None:
+    if not reservation or reservation.get("status") != "waiting":
+        return None
+    index = next((index for index, entry in enumerate(data.get("queue", [])) if str(entry.get("reservation_id")) == str(reservation.get("id"))), None)
+    return index + 1 if index is not None else None
+
+
+def assign_waiting_customers(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Assign waiting parties to newly vacant tables without staff approval."""
+    assigned = []
+    queue = data.setdefault("queue", [])
+    tables = sorted((table for table in data.get("tables", []) if table.get("status") == "Vacant" and not any(str(order.get("table_id")) == str(table.get("id")) and order.get("status") not in {"paid", "cancelled"} for order in data.get("orders", [])) and not any(str(reservation.get("table_id")) == str(table.get("id")) and reservation.get("status") == "seated" for reservation in data.get("reservations", []))), key=lambda table: (int(table.get("seats", 0)), int(table.get("number", 0))))
+    for table in tables:
+        index = next((i for i, entry in enumerate(queue) if (reservation := find_by_id(data.get("reservations", []), entry.get("reservation_id"))) and reservation.get("status") == "waiting" and int(reservation.get("party_size", 0)) <= int(table.get("seats", 0))), None)
+        if index is None:
+            continue
+        entry = queue.pop(index)
+        reservation = find_by_id(data.get("reservations", []), entry.get("reservation_id"))
+        if not reservation:
+            continue
+        reservation.update(status="seated", table_id=table["id"], seated_at=now_iso())
+        table["status"] = "Occupied"
+        assigned.append(reservation)
+        audit(data, "system", "reservation_seated", f"จองคิว {reservation.get('username')} ได้โต๊ะ {table.get('number')}")
+    return assigned
+
+
+def create_customer_reservation(data: dict[str, Any], customer: dict[str, Any], party_size_value: Any) -> dict[str, Any]:
+    existing = active_customer_reservation(data, customer["id"])
+    if existing:
+        raise ValidationError("คุณมีการจองโต๊ะหรือกำลังรอคิวอยู่แล้ว")
+    party_size = parse_int(party_size_value, "จำนวนผู้ใช้บริการ", 1, 500)
+    max_capacity = maximum_table_capacity(data)
+    if max_capacity == 0:
+        raise ValidationError("ร้านยังไม่มีโต๊ะที่เปิดจอง กรุณาติดต่อร้าน")
+    if party_size > max_capacity:
+        raise ValidationError(f"โต๊ะใหญ่ที่สุดรับได้ {max_capacity} คน กรุณาจองกลุ่มไม่เกิน {max_capacity} คน แล้วแยกจองคนที่เหลือ")
+    available = sorted((table for table in data.get("tables", []) if table.get("status") == "Vacant" and int(table.get("seats", 0)) >= party_size), key=lambda table: (int(table.get("seats", 0)), int(table.get("number", 0))))
+    reservation = {"id": str(uuid4()), "customer_id": customer["id"], "username": customer["username"], "party_size": party_size, "table_id": None, "status": "waiting", "created_at": now_iso()}
+    data.setdefault("reservations", []).append(reservation)
+    if available:
+        table = available[0]
+        table["status"] = "Occupied"
+        reservation.update(status="seated", table_id=table["id"], seated_at=now_iso())
+        message = f"โต๊ะ {table['number']} ว่างพอดี เชิญนั่งได้เลย"
+        audit(data, customer["username"], "reservation_seated", f"จองโต๊ะ {table['number']} สำหรับ {party_size} คน")
+    else:
+        queue = data.setdefault("queue", [])
+        queue.append({"reservation_id": reservation["id"], "customer_id": customer["id"], "party_size": party_size, "created_at": reservation["created_at"]})
+        position = len(queue)
+        message = f"โต๊ะยังไม่ว่าง เพิ่มเข้าคิวแล้ว ลำดับที่ {position}"
+        audit(data, customer["username"], "reservation_queued", f"เข้าคิวโต๊ะสำหรับ {party_size} คน ลำดับ {position}")
+    if not save_data(data):
+        raise ValidationError("บันทึกการจองไม่สำเร็จ กรุณาลองใหม่")
+    return {"reservation": reservation, "message": message}
+
+
+def cancel_customer_reservation(data: dict[str, Any], customer: dict[str, Any]) -> None:
+    reservation = active_customer_reservation(data, customer["id"])
+    if not reservation or reservation.get("status") != "waiting":
+        raise ValidationError("ยกเลิกได้เฉพาะรายการที่กำลังรอคิว")
+    reservation["status"] = "cancelled"
+    data["queue"] = [entry for entry in data.get("queue", []) if str(entry.get("reservation_id")) != str(reservation["id"])]
+    audit(data, customer["username"], "reservation_cancel", "ยกเลิกรอคิวโต๊ะ")
+    if not save_data(data):
+        raise ValidationError("ยกเลิกรายการไม่สำเร็จ กรุณาลองใหม่")
+
+
+def finish_table_if_clear(data: dict[str, Any], table_id: Any) -> bool:
+    open_orders = [order for order in data.get("orders", []) if str(order.get("table_id")) == str(table_id) and order.get("status") not in {"paid", "cancelled"}]
+    if open_orders:
+        return False
+    table = find_by_id(data.get("tables", []), table_id)
+    if table:
+        table["status"] = "Vacant"
+    for reservation in data.get("reservations", []):
+        if str(reservation.get("table_id")) == str(table_id) and reservation.get("status") == "seated":
+            reservation["status"] = "completed"
+            reservation["checked_out_at"] = now_iso()
+    assign_waiting_customers(data)
+    return True
+
+
 def save_table(data: dict[str, Any], form: Any, actor: str, table_id: str | None = None) -> dict[str, Any]:
     number = parse_int(form.get("number"), "หมายเลขโต๊ะ", 1, 999)
     seats = parse_int(form.get("seats"), "จำนวนที่นั่ง", 1, 50)
@@ -563,6 +656,13 @@ def save_table(data: dict[str, Any], form: Any, actor: str, table_id: str | None
         else:
             raise ValidationError("สถานะโต๊ะไม่ถูกต้อง")
     table = find_by_id(data["tables"], table_id) if table_id else None
+    if table:
+        seated_parties = [row for row in data.get("reservations", []) if str(row.get("table_id")) == str(table["id"]) and row.get("status") == "seated"]
+        if any(int(row.get("party_size", 0)) > seats for row in seated_parties):
+            raise ValidationError("จำนวนที่นั่งใหม่น้อยกว่าจำนวนลูกค้าที่กำลังใช้โต๊ะ")
+        active_order = any(str(order.get("table_id")) == str(table["id"]) and order.get("status") not in {"paid", "cancelled"} for order in data.get("orders", []))
+        if status == "Vacant" and (active_order or seated_parties):
+            raise ValidationError("ยังตั้งโต๊ะว่างไม่ได้ เพราะมีลูกค้าหรือออเดอร์กำลังใช้งาน")
     duplicate = next((r for r in data["tables"] if int(r.get("number", 0)) == number and r is not table), None)
     if duplicate:
         raise ValidationError("หมายเลขโต๊ะนี้มีแล้ว")
@@ -573,6 +673,8 @@ def save_table(data: dict[str, Any], form: Any, actor: str, table_id: str | None
         table = {"id": max([int(r.get("id", 0)) for r in data["tables"]] + [0]) + 1, "number": number, "seats": seats, "status": status}
         data["tables"].append(table)
         audit(data, actor, "table_create", f"เพิ่มโต๊ะ {number}")
+    if status == "Vacant":
+        assign_waiting_customers(data)
     if not save_data(data):
         raise ValidationError("บันทึกข้อมูลไม่สำเร็จ")
     return table
@@ -584,6 +686,8 @@ def delete_table(data: dict[str, Any], table_id: str, actor: str) -> None:
         raise ValidationError("ไม่พบโต๊ะที่ต้องการ")
     if any(int(o.get("table_id", -1)) == int(table_id) and o.get("status") not in {"paid", "cancelled"} for o in data["orders"]):
         raise ValidationError("ไม่สามารถลบโต๊ะที่มีออเดอร์ที่ยังไม่ปิดได้")
+    if any(str(row.get("table_id")) == str(table_id) and row.get("status") == "seated" for row in data.get("reservations", [])):
+        raise ValidationError("ไม่สามารถลบโต๊ะที่มีลูกค้ากำลังนั่งอยู่")
     data["tables"].remove(table)
     audit(data, actor, "table_delete", f"ลบโต๊ะ {table['number']}")
     if not save_data(data):
@@ -666,6 +770,108 @@ def create_customer_order(data: dict[str, Any], customer: dict[str, Any], menu_i
     return order
 
 
+def prepare_customer_cart_line(data: dict[str, Any], menu_id_value: Any, quantity_value: Any, selections: Any = None) -> dict[str, Any]:
+    menu_id = parse_int(menu_id_value, "เมนู", 1, 100000)
+    quantity = parse_int(quantity_value, "จำนวน", 1, 50)
+    menu = find_by_id(data.get("menu_items", []), menu_id)
+    if not menu or not menu.get("available"):
+        raise ValidationError("เมนูนี้หมดหรือไม่พร้อมขาย")
+    configured = menu.get("options") or {}
+    if hasattr(selections, "getlist"):
+        addons_value = selections.getlist("addons")
+        spicy_value = selections.get("spiciness")
+        portion_value = selections.get("portion")
+    elif isinstance(selections, dict):
+        addons_value = selections.get("addons", [])
+        if not isinstance(addons_value, list):
+            addons_value = [addons_value] if addons_value else []
+        spicy_value = selections.get("spiciness")
+        portion_value = selections.get("portion")
+    else:
+        addons_value, spicy_value, portion_value = [], None, None
+    spice_options = configured.get("spiciness", [])
+    portion_options = configured.get("portion", [])
+    if not spice_options or not portion_options:
+        raise ValidationError("ตัวเลือกเมนูยังไม่สมบูรณ์ กรุณาแจ้งร้าน")
+    spicy = _selected_option(spice_options, spicy_value or spice_options[0]["name"], "ระดับความเผ็ด")
+    portion = _selected_option(portion_options, portion_value or portion_options[0]["name"], "ขนาด")
+    if len(addons_value) > 10 or len(set(addons_value)) != len(addons_value):
+        raise ValidationError("เลือกท็อปปิ้งซ้ำหรือมากเกินไป")
+    addons = [_selected_option(configured.get("addons", []), value, "ท็อปปิ้ง") for value in addons_value]
+    base_price = parse_float(menu.get("price"), "ราคาเมนู", 0, 100000)
+    unit_price = round(base_price + float(spicy.get("price", 0)) + float(portion.get("price", 0)) + sum(float(option.get("price", 0)) for option in addons), 2)
+    return {"line_id": str(uuid4()), "menu_id": menu_id, "name": menu["name"], "qty": quantity, "base_price": base_price, "unit_price": unit_price, "options": {"spiciness": spicy["name"], "portion": portion["name"], "addons": [option["name"] for option in addons]}}
+
+
+def customer_cart(data: dict[str, Any], customer_id: Any) -> list[dict[str, Any]]:
+    carts = data.setdefault("carts", {})
+    value = carts.get(str(customer_id), [])
+    return value if isinstance(value, list) else []
+
+
+def add_customer_cart_item(data: dict[str, Any], customer: dict[str, Any], menu_id_value: Any, quantity_value: Any, selections: Any = None) -> list[dict[str, Any]]:
+    line = prepare_customer_cart_line(data, menu_id_value, quantity_value, selections)
+    cart = customer_cart(data, customer["id"])
+    existing = next((item for item in cart if int(item.get("menu_id", -1)) == line["menu_id"] and item.get("options", {}) == line["options"]), None)
+    if existing:
+        if int(existing.get("qty", 0)) + line["qty"] > 50:
+            raise ValidationError("สั่งเมนูเดียวกันได้ไม่เกิน 50 จานต่อรายการ")
+        existing["qty"] += line["qty"]
+    else:
+        if len(cart) >= 50:
+            raise ValidationError("ตะกร้ามีได้ไม่เกิน 50 รายการ")
+        cart.append(line)
+    data.setdefault("carts", {})[str(customer["id"])] = cart
+    if not save_data(data):
+        raise ValidationError("บันทึกตะกร้าไม่สำเร็จ กรุณาลองใหม่")
+    return cart
+
+
+def update_customer_cart_item(data: dict[str, Any], customer: dict[str, Any], line_id: Any, quantity_value: Any) -> list[dict[str, Any]]:
+    quantity = parse_int(quantity_value, "จำนวน", 0, 50)
+    cart = customer_cart(data, customer["id"])
+    line = next((item for item in cart if str(item.get("line_id")) == str(line_id)), None)
+    if not line:
+        raise ValidationError("ไม่พบรายการในตะกร้า")
+    if quantity == 0:
+        cart.remove(line)
+    else:
+        line["qty"] = quantity
+    data.setdefault("carts", {})[str(customer["id"])] = cart
+    if not save_data(data):
+        raise ValidationError("บันทึกตะกร้าไม่สำเร็จ กรุณาลองใหม่")
+    return cart
+
+
+def create_customer_table_order(data: dict[str, Any], customer: dict[str, Any], reservation: dict[str, Any] | None) -> dict[str, Any]:
+    if not reservation or reservation.get("status") != "seated" or str(reservation.get("customer_id")) != str(customer["id"]):
+        raise ValidationError("ต้องได้โต๊ะก่อนจึงจะสั่งอาหารได้")
+    table = find_by_id(data.get("tables", []), reservation.get("table_id"))
+    if not table or table.get("status") not in {"Occupied", "Awaiting Checkout"}:
+        raise ValidationError("โต๊ะของคุณไม่พร้อมสั่งอาหาร กรุณาจองโต๊ะใหม่")
+    if int(reservation.get("party_size", 0)) > int(table.get("seats", 0)):
+        raise ValidationError("จำนวนคนเกินที่นั่งของโต๊ะ กรุณาติดต่อร้าน")
+    cart = customer_cart(data, customer["id"])
+    if not cart:
+        raise ValidationError("ยังไม่มีเมนูในตะกร้า")
+    items = []
+    for entry in cart:
+        options = entry.get("options", {})
+        selections = {"spiciness": options.get("spiciness"), "portion": options.get("portion"), "addons": options.get("addons", [])}
+        line = prepare_customer_cart_line(data, entry.get("menu_id"), entry.get("qty"), selections)
+        line["line_id"] = str(uuid4())
+        items.append(line)
+    order = {"id": str(uuid4())[:8].upper(), "table_id": table["id"], "customer_id": customer["id"], "customer_name": customer["username"], "party_size": reservation["party_size"], "order_type": "dine_in", "items": items, "status": "active", "created_at": now_iso(), "updated_at": now_iso()}
+    data.setdefault("orders", []).append(order)
+    data.setdefault("carts", {}).pop(str(customer["id"]), None)
+    table["status"] = "Occupied"
+    reservation["order_id"] = order["id"]
+    audit(data, customer["username"], "dine_in_order_create", f"ยืนยันออเดอร์ {order['id']} โต๊ะ {table['number']} รวม {len(items)} รายการ")
+    if not save_data(data):
+        raise ValidationError("ส่งออเดอร์ไม่สำเร็จ กรุณาลองใหม่")
+    return order
+
+
 def change_customer_order_item(data: dict[str, Any], order_id: str, customer: dict[str, Any], menu_id_value: Any, quantity_value: Any, line_id_value: Any = None) -> dict[str, Any]:
     order = find_by_id(data["orders"], order_id)
     if not order or str(order.get("customer_id")) != str(customer["id"]):
@@ -714,9 +920,7 @@ def change_order_item(data: dict[str, Any], order_id: str, menu_id: Any, quantit
         order["items"].append({"menu_id": menu_id_int, "name": menu["name"], "qty": new_qty, "unit_price": menu["price"]})
     if not order["items"]:
         order["status"] = "cancelled"
-        table = find_by_id(data["tables"], order["table_id"])
-        if table:
-            table["status"] = "Vacant"
+        finish_table_if_clear(data, order.get("table_id"))
         audit(data, actor, "order_cancel", f"ยกเลิกออเดอร์ {order_id} หลังรายการหมด")
     else:
         order["updated_at"] = now_iso()
@@ -731,9 +935,7 @@ def cancel_order(data: dict[str, Any], order_id: str, actor: str) -> None:
     if not order or order.get("status") in {"paid", "cancelled"}:
         raise ValidationError("ไม่พบออเดอร์ที่ยกเลิกได้")
     order["status"] = "cancelled"
-    table = find_by_id(data["tables"], order["table_id"])
-    if table:
-        table["status"] = "Vacant"
+    finish_table_if_clear(data, order.get("table_id"))
     audit(data, actor, "order_cancel", f"ยกเลิกออเดอร์ {order_id}")
     if not save_data(data):
         raise ValidationError("บันทึกการยกเลิกออเดอร์ไม่สำเร็จ กรุณาลองใหม่")
@@ -786,12 +988,45 @@ def checkout(data: dict[str, Any], order_id: str, form: Any, actor: str) -> dict
     order["status"] = "paid"
     order["paid_at"] = now_iso()
     table = find_by_id(data["tables"], order["table_id"])
-    if table:
-        table["status"] = "Vacant"
+    if not finish_table_if_clear(data, order.get("table_id")) and table:
+        table["status"] = "Awaiting Checkout"
     audit(data, actor, "checkout", f"ชำระออเดอร์ {order_id}: {bill['total']:.2f} บาท")
     if not save_data(data):
         raise ValidationError("บันทึกการชำระเงินไม่สำเร็จ กรุณาลองใหม่")
     return bill
+
+
+def customer_table_checkout_preview(data: dict[str, Any], customer: dict[str, Any]) -> dict[str, Any]:
+    reservation = active_customer_reservation(data, customer["id"])
+    if not reservation or reservation.get("status") != "seated":
+        raise ValidationError("ยังไม่มีโต๊ะที่สามารถ checkout ได้")
+    table = find_by_id(data.get("tables", []), reservation.get("table_id"))
+    if not table:
+        raise ValidationError("ไม่พบโต๊ะที่กำลังใช้งาน")
+    orders = [order for order in data.get("orders", []) if str(order.get("customer_id")) == str(customer["id"]) and str(order.get("table_id")) == str(table["id"]) and order.get("order_type") == "dine_in" and order.get("status") not in {"paid", "cancelled"}]
+    if any(order.get("status") != "ready" for order in orders):
+        raise ValidationError("ยังมีออเดอร์ที่ร้านกำลังเตรียมหรือยังไม่พร้อม กรุณารอให้ร้านทำอาหารเสร็จก่อน checkout")
+    bills = [{"order": order, "bill": calculate_bill(order)} for order in orders]
+    return {"reservation": reservation, "table": table, "bills": bills, "total": round(sum(row["bill"]["total"] for row in bills), 2)}
+
+
+def customer_table_checkout(data: dict[str, Any], customer: dict[str, Any]) -> dict[str, Any]:
+    preview = customer_table_checkout_preview(data, customer)
+    for row in preview["bills"]:
+        order = row["order"]
+        order["bill"] = row["bill"]
+        order["status"] = "paid"
+        order["paid_at"] = now_iso()
+        order["payment_method"] = "customer_confirmed_at_restaurant"
+        audit(data, customer["username"], "customer_table_checkout", f"ยืนยัน checkout ออเดอร์ {order['id']}: {row['bill']['total']:.2f} บาท")
+    reservation = preview["reservation"]
+    reservation["status"] = "completed"
+    reservation["checked_out_at"] = now_iso()
+    data.setdefault("carts", {}).pop(str(customer["id"]), None)
+    finish_table_if_clear(data, preview["table"]["id"])
+    if not save_data(data):
+        raise ValidationError("checkout โต๊ะไม่สำเร็จ กรุณาลองใหม่")
+    return preview
 
 
 def daily_report(data: dict[str, Any]) -> dict[str, Any]:

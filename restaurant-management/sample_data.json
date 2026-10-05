@@ -292,6 +292,7 @@
   "orders": [],
   "reservations": [],
   "queue": [],
+  "carts": {},
   "audit": [],
   "settings": {
     "restaurant_name": "อิ่มอร่อย",
