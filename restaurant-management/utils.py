@@ -818,9 +818,12 @@ def cancel_future_reservation(data: dict[str, Any], reservation_id: Any, custome
     return reservation
 
 
-def finish_table_if_clear(data: dict[str, Any], table_id: Any) -> bool:
+def finish_table_if_clear(data: dict[str, Any], table_id: Any, payment_confirmed: bool = False) -> bool:
     open_orders = [order for order in data.get("orders", []) if str(order.get("table_id")) == str(table_id) and order.get("status") not in {"paid", "cancelled"}]
     if open_orders:
+        return False
+    seated = [reservation for reservation in data.get("reservations", []) if str(reservation.get("table_id")) == str(table_id) and reservation.get("status") == "seated"]
+    if seated and not payment_confirmed:
         return False
     table = find_by_id(data.get("tables", []), table_id)
     if table:
@@ -853,8 +856,8 @@ def save_table(data: dict[str, Any], form: Any, actor: str, table_id: str | None
         if any(int(row.get("party_size", 0)) > seats for row in seated_parties):
             raise ValidationError("จำนวนที่นั่งใหม่น้อยกว่าจำนวนลูกค้าที่กำลังใช้โต๊ะ")
         active_order = any(str(order.get("table_id")) == str(table["id"]) and order.get("status") not in {"paid", "cancelled"} for order in data.get("orders", []))
-        if status == "Vacant" and (active_order or seated_parties):
-            raise ValidationError("ยังตั้งโต๊ะว่างไม่ได้ เพราะมีลูกค้าหรือออเดอร์กำลังใช้งาน")
+        if status == "Vacant" and active_order:
+            raise ValidationError("ยังตั้งโต๊ะว่างไม่ได้ เพราะมีออเดอร์ที่ยังไม่ชำระหรือยังไม่ได้รับการยืนยัน")
     duplicate = next((r for r in data["tables"] if int(r.get("number", 0)) == number and r is not table), None)
     if duplicate:
         raise ValidationError("หมายเลขโต๊ะนี้มีแล้ว")
@@ -866,6 +869,10 @@ def save_table(data: dict[str, Any], form: Any, actor: str, table_id: str | None
         data["tables"].append(table)
         audit(data, actor, "table_create", f"เพิ่มโต๊ะ {number}")
     if status == "Vacant":
+        for reservation in data.get("reservations", []):
+            if str(reservation.get("table_id")) == str(table["id"]) and reservation.get("status") == "seated":
+                reservation["status"] = "completed"
+                reservation["checked_out_at"] = now_iso()
         assign_waiting_customers(data)
     if not save_data(data):
         raise ValidationError("บันทึกข้อมูลไม่สำเร็จ")
@@ -1204,13 +1211,15 @@ def checkout(data: dict[str, Any], order_id: str, form: Any, actor: str) -> dict
     order = find_by_id(data["orders"], order_id)
     if not order or order.get("status") in {"paid", "cancelled"} or not order.get("items"):
         raise ValidationError("ออเดอร์นี้ยังชำระเงินไม่ได้")
+    if order.get("order_type") == "dine_in" and order.get("status") != "payment_pending":
+        raise ValidationError("รอลูกค้ากดขอชำระเงินก่อน แล้วจึงยืนยันรับชำระและปล่อยโต๊ะได้")
     bill = calculate_bill(order, form.get("discount", 0), form.get("vat_rate", 7), form.get("service_rate", 0))
     order["bill"] = bill
     order["status"] = "paid"
     order["paid_at"] = now_iso()
     order["payment_confirmed_by"] = actor
     table = find_by_id(data["tables"], order["table_id"])
-    if not finish_table_if_clear(data, order.get("table_id")) and table:
+    if not finish_table_if_clear(data, order.get("table_id"), payment_confirmed=True) and table:
         table["status"] = "Awaiting Checkout"
     audit(data, actor, "checkout", f"ชำระออเดอร์ {order_id}: {bill['total']:.2f} บาท")
     notify_customer(data, order, "ร้านยืนยันการชำระเงินแล้ว", f"ออเดอร์ #{order_id} ชำระเงินเรียบร้อย ยอด {bill['total']:.2f} บาท")
@@ -1229,6 +1238,8 @@ def customer_table_checkout_preview(data: dict[str, Any], customer: dict[str, An
     orders = [order for order in data.get("orders", []) if str(order.get("customer_id")) == str(customer["id"]) and str(order.get("table_id")) == str(table["id"]) and order.get("order_type") == "dine_in" and order.get("status") not in {"paid", "cancelled"}]
     if any(order.get("status") not in {"served", "payment_pending"} for order in orders):
         raise ValidationError("รอให้พนักงานนำอาหารไปเสิร์ฟถึงโต๊ะก่อน แล้วจึงขอชำระเงินได้")
+    if not orders:
+        raise ValidationError("ยังไม่มีรายการชำระเงิน กรุณาแจ้งพนักงานให้ตรวจสอบและยืนยันปล่อยโต๊ะ")
     bills = [{"order": order, "bill": calculate_bill(order)} for order in orders]
     return {"reservation": reservation, "table": table, "bills": bills, "total": round(sum(row["bill"]["total"] for row in bills), 2)}
 
@@ -1248,13 +1259,7 @@ def customer_table_checkout(data: dict[str, Any], customer: dict[str, Any]) -> d
         audit(data, customer["username"], "payment_request", f"ขอชำระออเดอร์ {order['id']}: {row['bill']['total']:.2f} บาท")
         notify_staff(data, "ลูกค้าขอชำระเงิน", f"ออเดอร์ #{order['id']} โต๊ะ {preview['table']['number']} ยอด {row['bill']['total']:.2f} บาท", f"/orders/{order['id']}")
         notify(data, customer["id"], "ส่งคำขอชำระเงินแล้ว", f"รอร้านยืนยันการชำระเงิน ออเดอร์ #{order['id']}", f"/my-orders/{order['id']}")
-    reservation = preview["reservation"]
-    if not preview["bills"]:
-        reservation["status"] = "completed"
-        reservation["checked_out_at"] = now_iso()
-        finish_table_if_clear(data, preview["table"]["id"])
-    else:
-        preview["table"]["status"] = "Awaiting Checkout"
+    preview["table"]["status"] = "Awaiting Checkout"
     if not save_data(data):
         raise ValidationError("checkout โต๊ะไม่สำเร็จ กรุณาลองใหม่")
     preview["payment_requested"] = bool(ready)

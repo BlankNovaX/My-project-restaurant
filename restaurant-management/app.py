@@ -417,6 +417,9 @@ def create_app() -> Flask:
         order = utils.find_by_id(g.data["orders"], order_id)
         if not order:
             abort(404)
+        if order.get("order_type") == "dine_in" and order.get("status") != "payment_pending":
+            flash("รอลูกค้ากดขอชำระเงินก่อน แล้วจึงยืนยันรับชำระและปล่อยโต๊ะได้", "warning")
+            return redirect(url_for("order_detail", order_id=order_id))
         if request.method == "POST":
             try:
                 utils.checkout(g.data, order_id, request.form, current_user()["username"])
@@ -594,7 +597,7 @@ def create_app() -> Flask:
         try:
             if request.method == "POST":
                 result = utils.customer_table_checkout(g.data, current_user())
-                flash((f"ส่งคำขอชำระเงินยอด {result['request_total']:.2f} บาทแล้ว รอร้านตรวจสอบก่อนปล่อยโต๊ะ" if result.get("payment_requested") else "Checkout โต๊ะเรียบร้อย ไม่มีออเดอร์รอชำระ โต๊ะว่างแล้ว"), "success")
+                flash(f"ส่งคำขอชำระเงินยอด {result['request_total']:.2f} บาทแล้ว รอร้านตรวจสอบและยืนยันก่อนปล่อยโต๊ะ", "success")
                 return redirect(url_for("dashboard"))
             preview = utils.customer_table_checkout_preview(g.data, current_user())
             return render_template("customer_table_checkout.html", preview=preview)
