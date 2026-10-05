@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import os
+import io
+import json
 from datetime import datetime, timezone
 from functools import wraps
-from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, send_file, session, url_for
 
 import utils
 
@@ -39,7 +41,10 @@ def create_app() -> Flask:
         queue_position = utils.reservation_queue_position(g.data, reservation)
         cart_count = sum(int(line.get("qty", 0)) for line in utils.customer_cart(g.data, user["id"])) if user and user.get("role") == "customer" else 0
         table_label = f"โต๊ะ {table['number']} · {reservation['party_size']} คน" if table else (f"รอคิว #{queue_position} · {reservation['party_size']} คน" if reservation else "")
-        return {"current_user": user, "csrf_token": session.get("csrf_token", ""), "currency": "฿", "restaurant_name": settings.get("restaurant_name", "อิ่มอร่อย"), "store_settings": settings, "primary_text_color": utils.contrasting_text_color(primary), "storage_warning": utils.uses_ephemeral_storage(), "customer_reservation": reservation, "customer_table": table, "customer_queue_position": queue_position, "customer_cart_count": cart_count, "customer_table_label": table_label}
+        notifications = utils.notifications_for(g.data, user["id"]) if user else []
+        unread_notifications = sum(1 for item in notifications if not item.get("read_at"))
+        future_reservations = utils.active_future_reservations(g.data, user["id"]) if user else []
+        return {"current_user": user, "csrf_token": session.get("csrf_token", ""), "currency": "฿", "restaurant_name": settings.get("restaurant_name", "อิ่มอร่อย"), "store_settings": settings, "primary_text_color": utils.contrasting_text_color(primary), "storage_warning": utils.uses_ephemeral_storage(), "customer_reservation": reservation, "customer_table": table, "customer_queue_position": queue_position, "customer_cart_count": cart_count, "customer_table_label": table_label, "unread_notifications": unread_notifications, "customer_future_reservations": future_reservations}
 
     def current_user():
         identity = session.get("identity")
@@ -276,6 +281,9 @@ def create_app() -> Flask:
         item = utils.find_by_id(g.data["menu_items"], item_id)
         if not item:
             abort(404)
+        if not item.get("available") and int(item.get("stock_quantity", 999999)) <= 0:
+            flash("สต็อกเป็นศูนย์ กรุณาปรับจำนวนคงเหลือก่อนเปิดขาย", "warning")
+            return redirect(url_for("menu_list"))
         item["available"] = not bool(item.get("available"))
         utils.audit(g.data, current_user()["username"], "stock_toggle", f"{item['name']}: {'พร้อมขาย' if item['available'] else 'หมด'}")
         if not utils.save_data(g.data):
@@ -294,7 +302,7 @@ def create_app() -> Flask:
                 return redirect(url_for("tables"))
             except utils.ValidationError as error:
                 handle_validation(error)
-        return render_template("tables.html", tables=sorted(g.data["tables"], key=lambda t: t["number"], reverse=request.args.get("direction") == "desc"), orders=g.data["orders"], reservations=sorted(g.data.get("reservations", []), key=lambda r: r.get("created_at", ""), reverse=True), queue=g.data.get("queue", []))
+        return render_template("tables.html", tables=sorted(g.data["tables"], key=lambda t: t["number"], reverse=request.args.get("direction") == "desc"), orders=g.data["orders"], reservations=sorted(g.data.get("reservations", []), key=lambda r: r.get("created_at", ""), reverse=True), queue=g.data.get("queue", []), future_reservations=sorted(g.data.get("future_reservations", []), key=lambda r: r.get("starts_at", "")))
 
     @app.post("/tables/<int:table_id>/edit")
     @roles_required("admin", "staff")
@@ -315,6 +323,22 @@ def create_app() -> Flask:
         except utils.ValidationError as error:
             handle_validation(error)
         return redirect(url_for("tables"))
+
+    @app.post("/reservations/future/<reservation_id>")
+    @roles_required("admin", "staff")
+    def future_reservation_update(reservation_id):
+        try:
+            utils.update_future_reservation(g.data, reservation_id, request.form.get("status"), current_user()["username"])
+            flash("อัปเดตการจองล่วงหน้าแล้ว", "success")
+        except utils.ValidationError as error:
+            handle_validation(error)
+        return redirect(url_for("future_reservations"))
+
+    @app.get("/future-reservations")
+    @roles_required("admin", "staff")
+    def future_reservations():
+        bookings = sorted(g.data.get("future_reservations", []), key=lambda row: row.get("starts_at", ""))
+        return render_template("future_reservations.html", reservations=bookings)
 
     @app.get("/orders")
     @roles_required("admin", "staff")
@@ -415,6 +439,13 @@ def create_app() -> Flask:
     def reports():
         return render_template("reports.html", report=utils.daily_report(g.data), audit=list(reversed(g.data["audit"][-30:])))
 
+    @app.get("/admin/backup.json")
+    @roles_required("admin")
+    def download_backup():
+        payload = {key: value for key, value in g.data.items() if key != "_revision"}
+        content = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        return send_file(io.BytesIO(content), mimetype="application/json", as_attachment=True, download_name=f"restaurant-backup-{datetime.now().strftime('%Y%m%d-%H%M')}.json")
+
     @app.route("/settings", methods=["GET", "POST"])
     @roles_required("admin")
     def settings():
@@ -446,6 +477,50 @@ def create_app() -> Flask:
         except utils.ValidationError as error:
             handle_validation(error)
         return redirect(url_for("dashboard"))
+
+    @app.post("/reservations/future")
+    @roles_required("customer")
+    def customer_future_reservation():
+        try:
+            reservation = utils.create_future_reservation(g.data, current_user(), request.form.get("party_size"), request.form.get("starts_at"))
+            flash(f"ส่งคำขอจองวันที่ {reservation['starts_at'][:16]} แล้ว รอร้านยืนยัน", "success")
+        except utils.ValidationError as error:
+            handle_validation(error)
+        return redirect(url_for("dashboard"))
+
+    @app.post("/reservations/future/<reservation_id>/cancel")
+    @roles_required("customer")
+    def customer_future_reservation_cancel(reservation_id):
+        try:
+            utils.cancel_future_reservation(g.data, reservation_id, current_user())
+            flash("ยกเลิกการจองล่วงหน้าแล้ว", "success")
+        except utils.ValidationError as error:
+            handle_validation(error)
+        return redirect(url_for("dashboard"))
+
+    @app.get("/notifications")
+    @roles_required("admin", "staff", "customer")
+    def notification_list():
+        return render_template("notifications.html", notifications=utils.notifications_for(g.data, current_user()["id"]))
+
+    @app.post("/notifications/read-all")
+    @roles_required("admin", "staff", "customer")
+    def notification_read_all():
+        try:
+            utils.mark_all_notifications_read(g.data, current_user()["id"])
+            flash("อ่านการแจ้งเตือนทั้งหมดแล้ว", "success")
+        except utils.ValidationError as error:
+            handle_validation(error)
+        return redirect(url_for("notification_list"))
+
+    @app.post("/notifications/<notification_id>/read")
+    @roles_required("admin", "staff", "customer")
+    def notification_read(notification_id):
+        try:
+            utils.mark_notification_read(g.data, current_user()["id"], notification_id)
+        except utils.ValidationError as error:
+            handle_validation(error)
+        return redirect(url_for("notification_list"))
 
     @app.get("/my-orders/cart")
     @roles_required("customer")
@@ -519,7 +594,7 @@ def create_app() -> Flask:
         try:
             if request.method == "POST":
                 result = utils.customer_table_checkout(g.data, current_user())
-                flash(f"Checkout โต๊ะเรียบร้อย ยอดรวม {result['total']:.2f} บาท โต๊ะว่างแล้ว", "success")
+                flash((f"ส่งคำขอชำระเงินยอด {result['request_total']:.2f} บาทแล้ว รอร้านตรวจสอบก่อนปล่อยโต๊ะ" if result.get("payment_requested") else "Checkout โต๊ะเรียบร้อย ไม่มีออเดอร์รอชำระ โต๊ะว่างแล้ว"), "success")
                 return redirect(url_for("dashboard"))
             preview = utils.customer_table_checkout_preview(g.data, current_user())
             return render_template("customer_table_checkout.html", preview=preview)
@@ -565,6 +640,11 @@ def create_app() -> Flask:
     @app.errorhandler(413)
     def request_too_large(_error):
         return render_template("error.html", code=413, message="ไฟล์ที่อัปโหลดมีขนาดใหญ่เกินกำหนด กรุณาเลือกไฟล์โลโก้ไม่เกิน 512 KB"), 413
+
+    @app.errorhandler(utils.StorageError)
+    def storage_error(error):
+        app.logger.warning("Storage operation failed: %s", error)
+        return render_template("error.html", code=503, message=str(error)), 503
 
     @app.errorhandler(500)
     def server_error(_error):

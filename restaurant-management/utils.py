@@ -6,9 +6,10 @@ import base64
 import math
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 from urllib.error import URLError, HTTPError
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -21,9 +22,10 @@ DATA_FILE = Path(os.environ.get("RMS_DATA_FILE", "/tmp/restaurant-management-dat
 UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "").rstrip("/")
 UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
 REDIS_DATA_KEY = os.environ.get("RMS_REDIS_DATA_KEY", "restaurant-management:data")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 ROLES = {"admin", "staff", "customer"}
 TABLE_STATUSES = {"Vacant", "Occupied", "Awaiting Checkout"}
-ORDER_STATUSES = {"active", "preparing", "ready", "paid", "cancelled"}
+ORDER_STATUSES = {"active", "preparing", "ready", "payment_pending", "paid", "cancelled"}
 DEFAULT_MENU_OPTIONS = {
     "spiciness": [("ระดับ 0 · ไม่เผ็ด", 0), ("ระดับ 1 · เผ็ดน้อย", 0), ("ระดับ 2 · เผ็ดกลาง", 0), ("ระดับ 3 · เผ็ดมาก", 0), ("ระดับ 4 · เผ็ดพิเศษ", 0)],
     "portion": [("เล็ก", 0), ("ปกติ", 0), ("ใหญ่", 0)],
@@ -44,7 +46,7 @@ def remote_storage_enabled() -> bool:
 
 
 def uses_ephemeral_storage() -> bool:
-    return bool(os.environ.get("VERCEL")) and not remote_storage_enabled()
+    return bool(os.environ.get("VERCEL")) and not remote_storage_enabled() and not bool(DATABASE_URL)
 
 
 def contrasting_text_color(hex_color: str) -> str:
@@ -80,12 +82,20 @@ def now_iso() -> str:
 
 
 def empty_data() -> dict[str, Any]:
-    return {"users": [], "menu_items": [], "tables": [], "orders": [], "reservations": [], "queue": [], "carts": {}, "audit": [], "settings": {"restaurant_name": "อิ่มอร่อย", "opening_days": "ทุกวัน", "opening_hours": "10:00 - 22:00", "welcome_message": "อร่อยง่าย สั่งได้เลย", "featured_menu_ids": [], "hero_title": "อร่อยง่าย สั่งได้เลย", "announcement": "", "logo_url": "", "hero_image_url": "", "primary_color": "#176b50", "accent_color": "#d9ef93", "page_background": "#f6f5ef", "card_style": "rounded", "show_featured": True}}
+    return {"users": [], "menu_items": [], "tables": [], "orders": [], "reservations": [], "future_reservations": [], "queue": [], "carts": {}, "notifications": [], "audit": [], "_revision": 0, "settings": {"restaurant_name": "อิ่มอร่อย", "opening_days": "ทุกวัน", "opening_hours": "10:00 - 22:00", "welcome_message": "อร่อยง่าย สั่งได้เลย", "featured_menu_ids": [], "hero_title": "อร่อยง่าย สั่งได้เลย", "announcement": "", "logo_url": "", "hero_image_url": "", "primary_color": "#176b50", "accent_color": "#d9ef93", "page_background": "#f6f5ef", "card_style": "rounded", "show_featured": True}}
 
 
 def apply_schema_defaults(data: dict[str, Any]) -> bool:
     """Upgrade older JSON data in place while preserving existing restaurant content."""
     changed = False
+    for key, default in (("future_reservations", []), ("notifications", []), ("_revision", 0)):
+        if not isinstance(data.get(key), type(default)):
+            data[key] = default
+            changed = True
+    for item in data.get("menu_items", []):
+        if "stock_quantity" not in item:
+            item["stock_quantity"] = 999999
+            changed = True
     settings = data.setdefault("settings", {})
     design_defaults = (("opening_days", "ทุกวัน"), ("opening_hours", "10:00 - 22:00"), ("welcome_message", "อร่อยง่าย สั่งได้เลย"), ("featured_menu_ids", []), ("hero_title", "อร่อยง่าย สั่งได้เลย"), ("announcement", ""), ("logo_url", ""), ("hero_image_url", ""), ("primary_color", "#176b50"), ("accent_color", "#d9ef93"), ("page_background", "#f6f5ef"), ("card_style", "rounded"), ("show_featured", True))
     for key, value in design_defaults:
@@ -118,12 +128,15 @@ def apply_schema_defaults(data: dict[str, Any]) -> bool:
 
 def load_data() -> dict[str, Any]:
     """Load data safely; initialize from the bundled sample on first run."""
+    if DATABASE_URL:
+        return _load_postgres_data()
     if bool(UPSTASH_URL) != bool(UPSTASH_TOKEN):
         raise StorageError("ต้องกำหนด Upstash REST URL และ token ให้ครบทั้งคู่")
     if remote_storage_enabled():
         stored = _redis_command(["GET", REDIS_DATA_KEY])
         if stored is None:
             initial = json.loads(SEED_FILE.read_text(encoding="utf-8")) if SEED_FILE.exists() else empty_data()
+            apply_schema_defaults(initial)
             if not save_data(initial):
                 raise StorageError("บันทึกข้อมูลเริ่มต้นไม่สำเร็จ")
             return initial
@@ -163,6 +176,8 @@ def load_data() -> dict[str, Any]:
 
 def save_data(data: dict[str, Any]) -> bool:
     """Write JSON atomically. Returns False rather than leaking file errors."""
+    if DATABASE_URL:
+        return _save_postgres_data(data)
     if bool(UPSTASH_URL) != bool(UPSTASH_TOKEN):
         raise StorageError("ต้องกำหนด Upstash REST URL และ token ให้ครบทั้งคู่")
     if remote_storage_enabled():
@@ -178,9 +193,102 @@ def save_data(data: dict[str, Any]) -> bool:
         return False
 
 
+def _postgres_connect():
+    try:
+        import psycopg
+        return psycopg.connect(DATABASE_URL, connect_timeout=8)
+    except Exception as error:
+        raise StorageError("เชื่อมต่อ PostgreSQL ไม่ได้ กรุณาตรวจสอบ DATABASE_URL และติดตั้ง psycopg") from error
+
+
+def _ensure_postgres_table(connection: Any) -> None:
+    connection.execute("CREATE TABLE IF NOT EXISTS restaurant_state (id SMALLINT PRIMARY KEY CHECK (id = 1), revision BIGINT NOT NULL, payload JSONB NOT NULL)")
+
+
+def _load_postgres_data() -> dict[str, Any]:
+    try:
+        with _postgres_connect() as connection:
+            _ensure_postgres_table(connection)
+            row = connection.execute("SELECT revision, payload FROM restaurant_state WHERE id = 1").fetchone()
+            if row is None:
+                initial = json.loads(SEED_FILE.read_text(encoding="utf-8")) if SEED_FILE.exists() else empty_data()
+                initial["_revision"] = 0
+                connection.execute("INSERT INTO restaurant_state (id, revision, payload) VALUES (1, 0, %s::jsonb) ON CONFLICT (id) DO NOTHING", (json.dumps(initial, ensure_ascii=False),))
+                row = connection.execute("SELECT revision, payload FROM restaurant_state WHERE id = 1").fetchone()
+            revision, payload = row
+        data = payload if isinstance(payload, dict) else json.loads(payload)
+        data["_revision"] = int(revision)
+        if apply_schema_defaults(data):
+            _save_postgres_data(data)
+        return data
+    except StorageError:
+        raise
+    except Exception as error:
+        raise StorageError("อ่านข้อมูล PostgreSQL ไม่สำเร็จ") from error
+
+
+def _save_postgres_data(data: dict[str, Any]) -> bool:
+    revision = int(data.get("_revision", 0))
+    payload = dict(data)
+    payload.pop("_revision", None)
+    try:
+        with _postgres_connect() as connection:
+            _ensure_postgres_table(connection)
+            row = connection.execute("UPDATE restaurant_state SET revision = revision + 1, payload = %s::jsonb WHERE id = 1 AND revision = %s RETURNING revision", (json.dumps(payload, ensure_ascii=False), revision)).fetchone()
+            if row is None:
+                raise StorageError("มีผู้ใช้อื่นบันทึกข้อมูลพร้อมกัน กรุณาโหลดหน้าใหม่แล้วลองอีกครั้ง")
+            data["_revision"] = int(row[0])
+        return True
+    except StorageError:
+        raise
+    except Exception as error:
+        raise StorageError("บันทึกข้อมูล PostgreSQL ไม่สำเร็จ") from error
+
+
 def audit(data: dict[str, Any], actor: str, action: str, detail: str) -> None:
     data["audit"].append({"id": str(uuid4()), "at": now_iso(), "actor": actor, "action": action, "detail": detail})
     data["audit"] = data["audit"][-500:]
+
+
+def notify(data: dict[str, Any], user_id: Any, title: str, message: str, link: str = "") -> None:
+    data.setdefault("notifications", []).append({"id": str(uuid4()), "user_id": str(user_id), "title": title, "message": message, "link": link, "created_at": now_iso(), "read_at": None})
+    data["notifications"] = data["notifications"][-1000:]
+
+
+def notify_customer(data: dict[str, Any], order: dict[str, Any], title: str, message: str) -> None:
+    if order.get("customer_id"):
+        notify(data, order["customer_id"], title, message, f"/my-orders/{order['id']}")
+
+
+def notifications_for(data: dict[str, Any], user_id: Any) -> list[dict[str, Any]]:
+    return sorted((item for item in data.get("notifications", []) if str(item.get("user_id")) == str(user_id)), key=lambda item: item.get("created_at", ""), reverse=True)
+
+
+def mark_notification_read(data: dict[str, Any], user_id: Any, notification_id: Any) -> None:
+    notification = next((item for item in data.get("notifications", []) if str(item.get("id")) == str(notification_id) and str(item.get("user_id")) == str(user_id)), None)
+    if not notification:
+        raise ValidationError("ไม่พบการแจ้งเตือน")
+    notification["read_at"] = now_iso()
+    if not save_data(data):
+        raise ValidationError("บันทึกสถานะการแจ้งเตือนไม่สำเร็จ")
+
+
+def mark_all_notifications_read(data: dict[str, Any], user_id: Any) -> None:
+    now = now_iso()
+    for notification in data.get("notifications", []):
+        if str(notification.get("user_id")) == str(user_id) and not notification.get("read_at"):
+            notification["read_at"] = now
+    if not save_data(data):
+        raise ValidationError("บันทึกสถานะการแจ้งเตือนไม่สำเร็จ")
+
+
+def staff_user_ids(data: dict[str, Any]) -> list[str]:
+    return [str(user.get("id")) for user in data.get("users", []) if user.get("role") in {"admin", "staff"}]
+
+
+def notify_staff(data: dict[str, Any], title: str, message: str, link: str = "/orders") -> None:
+    for user_id in staff_user_ids(data):
+        notify(data, user_id, title, message, link)
 
 
 def ensure_demo_users(data: dict[str, Any]) -> bool:
@@ -506,13 +614,16 @@ def parse_option_lines(value: Any, label: str, required: bool = True) -> list[di
 
 
 def save_menu_item(data: dict[str, Any], form: Any, actor: str, item_id: str | None = None) -> dict[str, Any]:
+    item = find_by_id(data["menu_items"], item_id) if item_id else None
     name = normalize_text(form.get("name"), "ชื่อเมนู", 80)
     category = normalize_text(form.get("category"), "หมวดหมู่", 40)
     price = parse_float(form.get("price"), "ราคา", 0.01, 100000)
+    stock_default = int(item.get("stock_quantity", 999999)) if item else 40
+    stock_quantity = parse_int(form.get("stock_quantity", stock_default), "จำนวนคงเหลือ", 0, 1000000)
     image_url = normalize_text(form.get("image_url", ""), "URL รูปภาพ", 500, required=False)
     if image_url and not image_url.startswith(("https://", "http://")):
         raise ValidationError("URL รูปภาพต้องขึ้นต้นด้วย http:// หรือ https://")
-    available = parse_bool(form.get("available", "false"), "สถานะพร้อมขาย")
+    available = parse_bool(form.get("available", "false"), "สถานะพร้อมขาย") and stock_quantity > 0
     spiciness = normalize_text(form.get("spiciness", "ระดับ 0 · ไม่เผ็ด"), "ระดับความเผ็ด", 20)
     portion = normalize_text(form.get("portion", "ปกติ"), "ขนาด", 20)
     options = {
@@ -521,16 +632,18 @@ def save_menu_item(data: dict[str, Any], form: Any, actor: str, item_id: str | N
         "addons": parse_option_lines(form.get("addon_options", ""), "ท็อปปิ้ง", required=False),
     }
     addons = [option["name"] for option in options["addons"]]
-    item = find_by_id(data["menu_items"], item_id) if item_id else None
     if item:
         old_price = item.get("price")
-        item.update(name=name, category=category, price=price, image_url=image_url, available=available, spiciness=spiciness, portion=portion, addons=addons, options=options)
+        old_stock = int(item.get("stock_quantity", 999999))
+        item.update(name=name, category=category, price=price, image_url=image_url, available=available, stock_quantity=stock_quantity, spiciness=spiciness, portion=portion, addons=addons, options=options)
         if old_price != price:
             audit(data, actor, "price_change", f"เปลี่ยนราคา {name}: {old_price} → {price:.2f}")
-        else:
+        if old_stock != stock_quantity:
+            audit(data, actor, "inventory_adjust", f"ปรับสต็อก {name}: {old_stock} → {stock_quantity}")
+        if old_price == price and old_stock == stock_quantity:
             audit(data, actor, "menu_update", f"แก้ไขเมนู {name}")
     else:
-        item = {"id": max([int(r.get("id", 0)) for r in data["menu_items"]] + [0]) + 1, "name": name, "category": category, "price": price, "image_url": image_url, "available": available, "spiciness": spiciness, "portion": portion, "addons": addons, "options": options, "created_at": now_iso()}
+        item = {"id": max([int(r.get("id", 0)) for r in data["menu_items"]] + [0]) + 1, "name": name, "category": category, "price": price, "image_url": image_url, "available": available, "stock_quantity": stock_quantity, "spiciness": spiciness, "portion": portion, "addons": addons, "options": options, "created_at": now_iso()}
         data["menu_items"].append(item)
         audit(data, actor, "menu_create", f"เพิ่มเมนู {name}")
     if not save_data(data):
@@ -582,6 +695,7 @@ def assign_waiting_customers(data: dict[str, Any]) -> list[dict[str, Any]]:
         table["status"] = "Occupied"
         assigned.append(reservation)
         audit(data, "system", "reservation_seated", f"จองคิว {reservation.get('username')} ได้โต๊ะ {table.get('number')}")
+        notify(data, reservation.get("customer_id"), "ได้โต๊ะแล้ว", f"ถึงคิวของคุณแล้ว เชิญที่โต๊ะ {table.get('number')} ({reservation.get('party_size')} คน)", "/dashboard")
     return assigned
 
 
@@ -624,6 +738,84 @@ def cancel_customer_reservation(data: dict[str, Any], customer: dict[str, Any]) 
     audit(data, customer["username"], "reservation_cancel", "ยกเลิกรอคิวโต๊ะ")
     if not save_data(data):
         raise ValidationError("ยกเลิกรายการไม่สำเร็จ กรุณาลองใหม่")
+
+
+def create_future_reservation(data: dict[str, Any], customer: dict[str, Any], party_size_value: Any, starts_at_value: Any) -> dict[str, Any]:
+    party_size = parse_int(party_size_value, "จำนวนผู้ใช้บริการ", 1, 500)
+    try:
+        starts_at = datetime.strptime(normalize_text(starts_at_value, "วันและเวลาจอง", 30), "%Y-%m-%dT%H:%M").replace(tzinfo=ZoneInfo("Asia/Bangkok"))
+    except ValueError as error:
+        raise ValidationError("กรุณาเลือกวันและเวลาจองให้ถูกต้อง") from error
+    now = datetime.now(ZoneInfo("Asia/Bangkok"))
+    if starts_at < now + timedelta(minutes=10) or starts_at > now + timedelta(days=90):
+        raise ValidationError("จองล่วงหน้าได้ตั้งแต่ 10 นาทีถึง 90 วัน")
+    maximum = maximum_table_capacity(data)
+    if party_size > maximum:
+        raise ValidationError(f"โต๊ะใหญ่ที่สุดรับได้ {maximum} คน กรุณาแยกจองกลุ่มที่เหลือ")
+    active = active_future_reservations(data, customer["id"])
+    if active:
+        raise ValidationError("คุณมีรายการจองล่วงหน้าที่ยังไม่เสร็จอยู่แล้ว")
+    capacity = sum(int(table.get("seats", 0)) for table in data.get("tables", []))
+    overlap = 0
+    for row in data.get("future_reservations", []):
+        if row.get("status") not in {"pending", "confirmed"}:
+            continue
+        try:
+            existing_at = datetime.fromisoformat(row["starts_at"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if abs((existing_at - starts_at).total_seconds()) < 90 * 60:
+            overlap += int(row.get("party_size", 0))
+    if overlap + party_size > capacity:
+        raise ValidationError("ช่วงเวลานี้มีผู้จองเต็มความจุร้านแล้ว กรุณาเลือกเวลาอื่น")
+    reservation = {"id": str(uuid4()), "customer_id": customer["id"], "username": customer["username"], "party_size": party_size, "starts_at": starts_at.isoformat(timespec="minutes"), "status": "pending", "created_at": now_iso()}
+    data.setdefault("future_reservations", []).append(reservation)
+    notify_staff(data, "มีคำขอจองล่วงหน้า", f"{customer['username']} ขอจอง {party_size} คน วันที่ {starts_at.strftime('%d/%m/%Y %H:%M')}", "/future-reservations")
+    audit(data, customer["username"], "future_reservation_request", f"จองล่วงหน้า {party_size} คน {starts_at.isoformat(timespec='minutes')}")
+    if not save_data(data):
+        raise ValidationError("บันทึกการจองไม่สำเร็จ กรุณาลองใหม่")
+    return reservation
+
+
+def active_future_reservations(data: dict[str, Any], customer_id: Any) -> list[dict[str, Any]]:
+    cutoff = datetime.now(ZoneInfo("Asia/Bangkok")) - timedelta(minutes=90)
+    active = []
+    for row in data.get("future_reservations", []):
+        if str(row.get("customer_id")) != str(customer_id) or row.get("status") not in {"pending", "confirmed"}:
+            continue
+        try:
+            if datetime.fromisoformat(row["starts_at"]) >= cutoff:
+                active.append(row)
+        except (KeyError, TypeError, ValueError):
+            continue
+    active.sort(key=lambda row: row.get("starts_at", ""))
+    return active
+
+
+def update_future_reservation(data: dict[str, Any], reservation_id: Any, status_value: Any, actor: str) -> dict[str, Any]:
+    reservation = find_by_id(data.get("future_reservations", []), reservation_id)
+    status = normalize_text(status_value, "สถานะจอง", 20)
+    if not reservation or reservation.get("status") != "pending" or status not in {"confirmed", "cancelled"}:
+        raise ValidationError("เปลี่ยนสถานะการจองนี้ไม่ได้")
+    reservation["status"] = status
+    reservation["updated_at"] = now_iso()
+    notify(data, reservation["customer_id"], "อัปเดตการจองล่วงหน้า", "ร้านยืนยันการจองแล้ว" if status == "confirmed" else "ร้านไม่สามารถรับการจองนี้ได้ กรุณาติดต่อร้าน", "/")
+    audit(data, actor, "future_reservation_update", f"{reservation['username']} → {status}")
+    if not save_data(data):
+        raise ValidationError("บันทึกสถานะการจองไม่สำเร็จ")
+    return reservation
+
+
+def cancel_future_reservation(data: dict[str, Any], reservation_id: Any, customer: dict[str, Any]) -> dict[str, Any]:
+    reservation = find_by_id(data.get("future_reservations", []), reservation_id)
+    if not reservation or str(reservation.get("customer_id")) != str(customer["id"]) or reservation.get("status") not in {"pending", "confirmed"}:
+        raise ValidationError("ยกเลิกการจองนี้ไม่ได้")
+    reservation["status"] = "cancelled"
+    reservation["updated_at"] = now_iso()
+    audit(data, customer["username"], "future_reservation_cancel", f"ยกเลิกการจองล่วงหน้า {reservation.get('starts_at')}")
+    if not save_data(data):
+        raise ValidationError("ยกเลิกการจองไม่สำเร็จ")
+    return reservation
 
 
 def finish_table_if_clear(data: dict[str, Any], table_id: Any) -> bool:
@@ -703,7 +895,7 @@ def create_order(data: dict[str, Any], table_id_value: Any, actor: str) -> dict[
         raise ValidationError("โต๊ะกำลังรอชำระเงิน")
     order = next((o for o in data["orders"] if int(o.get("table_id", -1)) == table_id and o.get("status") not in {"paid", "cancelled"}), None)
     if not order:
-        order = {"id": str(uuid4())[:8].upper(), "table_id": table_id, "items": [], "status": "active", "created_at": now_iso(), "updated_at": now_iso()}
+        order = {"id": str(uuid4())[:8].upper(), "table_id": table_id, "items": [], "stock_deducted": True, "status": "active", "created_at": now_iso(), "updated_at": now_iso()}
         data["orders"].append(order)
     table["status"] = "Occupied"
     audit(data, actor, "order_create", f"เปิดออเดอร์โต๊ะ {table['number']}")
@@ -855,18 +1047,29 @@ def create_customer_table_order(data: dict[str, Any], customer: dict[str, Any], 
     if not cart:
         raise ValidationError("ยังไม่มีเมนูในตะกร้า")
     items = []
+    requested_by_menu: dict[int, int] = {}
     for entry in cart:
         options = entry.get("options", {})
         selections = {"spiciness": options.get("spiciness"), "portion": options.get("portion"), "addons": options.get("addons", [])}
         line = prepare_customer_cart_line(data, entry.get("menu_id"), entry.get("qty"), selections)
+        requested_by_menu[line["menu_id"]] = requested_by_menu.get(line["menu_id"], 0) + line["qty"]
         line["line_id"] = str(uuid4())
         items.append(line)
-    order = {"id": str(uuid4())[:8].upper(), "table_id": table["id"], "customer_id": customer["id"], "customer_name": customer["username"], "party_size": reservation["party_size"], "order_type": "dine_in", "items": items, "status": "active", "created_at": now_iso(), "updated_at": now_iso()}
+    for menu_id, quantity in requested_by_menu.items():
+        menu = find_by_id(data["menu_items"], menu_id)
+        available_stock = int(menu.get("stock_quantity", 999999))
+        if available_stock < quantity:
+            raise ValidationError(f"เมนู {menu['name']} เหลือ {available_stock} จาน แต่ตะกร้าต้องการ {quantity} จาน")
+    for menu_id, quantity in requested_by_menu.items():
+        menu = find_by_id(data["menu_items"], menu_id)
+        menu["stock_quantity"] = int(menu.get("stock_quantity", 999999)) - quantity
+    order = {"id": str(uuid4())[:8].upper(), "table_id": table["id"], "customer_id": customer["id"], "customer_name": customer["username"], "party_size": reservation["party_size"], "order_type": "dine_in", "items": items, "stock_deducted": True, "status": "active", "created_at": now_iso(), "updated_at": now_iso()}
     data.setdefault("orders", []).append(order)
     data.setdefault("carts", {}).pop(str(customer["id"]), None)
     table["status"] = "Occupied"
     reservation["order_id"] = order["id"]
     audit(data, customer["username"], "dine_in_order_create", f"ยืนยันออเดอร์ {order['id']} โต๊ะ {table['number']} รวม {len(items)} รายการ")
+    notify_staff(data, "ออเดอร์ใหม่", f"ลูกค้าส่งออเดอร์ #{order['id']} โต๊ะ {table['number']}", "/orders")
     if not save_data(data):
         raise ValidationError("ส่งออเดอร์ไม่สำเร็จ กรุณาลองใหม่")
     return order
@@ -883,6 +1086,11 @@ def change_customer_order_item(data: dict[str, Any], order_id: str, customer: di
         delta = parse_int(quantity_value, "จำนวน", -50, 50)
         if not line or delta == 0 or int(line.get("qty", 0)) + delta < 0 or int(line.get("qty", 0)) + delta > 50:
             raise ValidationError("ปรับจำนวนรายการนี้ไม่ได้")
+        menu = find_by_id(data.get("menu_items", []), line.get("menu_id"))
+        if delta > 0 and menu and int(menu.get("stock_quantity", 999999)) < delta:
+            raise ValidationError(f"เมนู {menu['name']} มีสต็อกไม่พอ เหลือ {menu.get('stock_quantity', 0)} จาน")
+        if menu and order.get("stock_deducted"):
+            menu["stock_quantity"] = int(menu.get("stock_quantity", 999999)) - delta
         line["qty"] += delta
         if line["qty"] == 0:
             order["items"].remove(line)
@@ -912,6 +1120,10 @@ def change_order_item(data: dict[str, Any], order_id: str, menu_id: Any, quantit
     new_qty = old_qty + quantity
     if new_qty < 0:
         raise ValidationError("จำนวนที่จะลดมากกว่าจำนวนที่สั่ง")
+    if quantity > 0 and int(menu.get("stock_quantity", 999999)) < quantity:
+        raise ValidationError(f"เมนู {menu['name']} มีสต็อกไม่พอ เหลือ {menu.get('stock_quantity', 0)} จาน")
+    if order.get("stock_deducted"):
+        menu["stock_quantity"] = int(menu.get("stock_quantity", 999999)) - quantity
     if new_qty == 0 and line:
         order["items"].remove(line)
     elif line:
@@ -934,9 +1146,15 @@ def cancel_order(data: dict[str, Any], order_id: str, actor: str) -> None:
     order = find_by_id(data["orders"], order_id)
     if not order or order.get("status") in {"paid", "cancelled"}:
         raise ValidationError("ไม่พบออเดอร์ที่ยกเลิกได้")
+    if order.get("stock_deducted"):
+        for line in order.get("items", []):
+            menu = find_by_id(data.get("menu_items", []), line.get("menu_id"))
+            if menu:
+                menu["stock_quantity"] = int(menu.get("stock_quantity", 999999)) + int(line.get("qty", 0))
     order["status"] = "cancelled"
     finish_table_if_clear(data, order.get("table_id"))
     audit(data, actor, "order_cancel", f"ยกเลิกออเดอร์ {order_id}")
+    notify_customer(data, order, "ออเดอร์ถูกยกเลิก", f"ออเดอร์ #{order_id} ถูกยกเลิกโดยร้าน")
     if not save_data(data):
         raise ValidationError("บันทึกการยกเลิกออเดอร์ไม่สำเร็จ กรุณาลองใหม่")
 
@@ -959,6 +1177,7 @@ def update_order_status(data: dict[str, Any], order_id: str, status_value: Any, 
     else:
         order["status"] = "active"
     audit(data, actor, "kds_update", f"ออเดอร์ {order_id} → {status}")
+    notify_customer(data, order, "อัปเดตสถานะออเดอร์", f"ออเดอร์ #{order_id}: {'เริ่มเตรียมอาหาร' if status == 'preparing' else 'อาหารพร้อมแล้ว'}")
     if not save_data(data):
         raise ValidationError("บันทึกสถานะออเดอร์ไม่สำเร็จ กรุณาลองใหม่")
     return order
@@ -987,10 +1206,12 @@ def checkout(data: dict[str, Any], order_id: str, form: Any, actor: str) -> dict
     order["bill"] = bill
     order["status"] = "paid"
     order["paid_at"] = now_iso()
+    order["payment_confirmed_by"] = actor
     table = find_by_id(data["tables"], order["table_id"])
     if not finish_table_if_clear(data, order.get("table_id")) and table:
         table["status"] = "Awaiting Checkout"
     audit(data, actor, "checkout", f"ชำระออเดอร์ {order_id}: {bill['total']:.2f} บาท")
+    notify_customer(data, order, "ร้านยืนยันการชำระเงินแล้ว", f"ออเดอร์ #{order_id} ชำระเงินเรียบร้อย ยอด {bill['total']:.2f} บาท")
     if not save_data(data):
         raise ValidationError("บันทึกการชำระเงินไม่สำเร็จ กรุณาลองใหม่")
     return bill
@@ -1004,7 +1225,7 @@ def customer_table_checkout_preview(data: dict[str, Any], customer: dict[str, An
     if not table:
         raise ValidationError("ไม่พบโต๊ะที่กำลังใช้งาน")
     orders = [order for order in data.get("orders", []) if str(order.get("customer_id")) == str(customer["id"]) and str(order.get("table_id")) == str(table["id"]) and order.get("order_type") == "dine_in" and order.get("status") not in {"paid", "cancelled"}]
-    if any(order.get("status") != "ready" for order in orders):
+    if any(order.get("status") not in {"ready", "payment_pending"} for order in orders):
         raise ValidationError("ยังมีออเดอร์ที่ร้านกำลังเตรียมหรือยังไม่พร้อม กรุณารอให้ร้านทำอาหารเสร็จก่อน checkout")
     bills = [{"order": order, "bill": calculate_bill(order)} for order in orders]
     return {"reservation": reservation, "table": table, "bills": bills, "total": round(sum(row["bill"]["total"] for row in bills), 2)}
@@ -1012,20 +1233,30 @@ def customer_table_checkout_preview(data: dict[str, Any], customer: dict[str, An
 
 def customer_table_checkout(data: dict[str, Any], customer: dict[str, Any]) -> dict[str, Any]:
     preview = customer_table_checkout_preview(data, customer)
-    for row in preview["bills"]:
+    pending = [row for row in preview["bills"] if row["order"].get("status") == "payment_pending"]
+    ready = [row for row in preview["bills"] if row["order"].get("status") == "ready"]
+    if pending and not ready:
+        raise ValidationError("ส่งคำขอชำระเงินแล้ว กรุณารอร้านตรวจสอบ")
+    for row in ready:
         order = row["order"]
         order["bill"] = row["bill"]
-        order["status"] = "paid"
-        order["paid_at"] = now_iso()
-        order["payment_method"] = "customer_confirmed_at_restaurant"
-        audit(data, customer["username"], "customer_table_checkout", f"ยืนยัน checkout ออเดอร์ {order['id']}: {row['bill']['total']:.2f} บาท")
+        order["status"] = "payment_pending"
+        order["payment_requested_at"] = now_iso()
+        order["payment_method"] = "customer_requested_at_restaurant"
+        audit(data, customer["username"], "payment_request", f"ขอชำระออเดอร์ {order['id']}: {row['bill']['total']:.2f} บาท")
+        notify_staff(data, "ลูกค้าขอชำระเงิน", f"ออเดอร์ #{order['id']} โต๊ะ {preview['table']['number']} ยอด {row['bill']['total']:.2f} บาท", f"/orders/{order['id']}")
+        notify(data, customer["id"], "ส่งคำขอชำระเงินแล้ว", f"รอร้านยืนยันการชำระเงิน ออเดอร์ #{order['id']}", f"/my-orders/{order['id']}")
     reservation = preview["reservation"]
-    reservation["status"] = "completed"
-    reservation["checked_out_at"] = now_iso()
-    data.setdefault("carts", {}).pop(str(customer["id"]), None)
-    finish_table_if_clear(data, preview["table"]["id"])
+    if not preview["bills"]:
+        reservation["status"] = "completed"
+        reservation["checked_out_at"] = now_iso()
+        finish_table_if_clear(data, preview["table"]["id"])
+    else:
+        preview["table"]["status"] = "Awaiting Checkout"
     if not save_data(data):
         raise ValidationError("checkout โต๊ะไม่สำเร็จ กรุณาลองใหม่")
+    preview["payment_requested"] = bool(ready)
+    preview["request_total"] = round(sum(row["bill"]["total"] for row in ready), 2)
     return preview
 
 
