@@ -4,7 +4,6 @@
 <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 <div class="field"><label>ชื่อเมนู</label><input name="name" required maxlength="80" value="{{ request.form.get('name',item.name if item else '') }}"></div>
 <div class="grid two"><div class="field"><label>หมวดหมู่</label><input name="category" required maxlength="40" placeholder="อาหารจานเดียว" value="{{ request.form.get('category',item.category if item else '') }}"></div><div class="field"><label>ราคาเริ่มต้น (บาท)</label><input name="price" type="number" min="0.01" max="100000" step="0.01" required value="{{ request.form.get('price',item.price if item else '') }}"></div></div>
-<div class="field"><label>สต็อกที่ขายได้ (จาน)</label><input name="stock_quantity" type="number" min="0" max="1000000" step="1" required value="{{ request.form.get('stock_quantity',item.stock_quantity if item else 40) }}"><small class="muted">ระบบจะหักจำนวนนี้เมื่อลูกค้ายืนยันส่งออเดอร์ และคืนเมื่อร้านยกเลิกออเดอร์</small></div>
 <div class="field"><label>URL รูปภาพ (ไม่บังคับ)</label><input name="image_url" type="url" maxlength="500" value="{{ request.form.get('image_url',item.image_url if item else '') }}"></div>
 <div class="field"><label>ระดับความเผ็ดและราคาเพิ่ม</label><textarea name="spiciness_options" rows="4" required>{% if item and item.options %}{% for option in item.options.spiciness %}{{ option.name }}|{{ option.price }}{{ '\n' if not loop.last }}{% endfor %}{% else %}ระดับ 0 · ไม่เผ็ด|0
 ระดับ 1 · เผ็ดน้อย|0

@@ -58,8 +58,7 @@
             "price": 0.0
           }
         ]
-      },
-      "stock_quantity": 40
+      }
     },
     {
       "id": 2,
@@ -113,8 +112,7 @@
             "price": 0.0
           }
         ]
-      },
-      "stock_quantity": 40
+      }
     },
     {
       "id": 3,
@@ -161,8 +159,7 @@
           }
         ],
         "addons": []
-      },
-      "stock_quantity": 40
+      }
     },
     {
       "id": 4,
@@ -216,8 +213,7 @@
             "price": 0.0
           }
         ]
-      },
-      "stock_quantity": 40
+      }
     },
     {
       "id": 5,
@@ -264,8 +260,7 @@
           }
         ],
         "addons": []
-      },
-      "stock_quantity": 40
+      }
     }
   ],
   "tables": [

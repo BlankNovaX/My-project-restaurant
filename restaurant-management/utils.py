@@ -6,6 +6,7 @@ import base64
 import math
 import os
 import re
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 ROLES = {"admin", "staff", "customer"}
 TABLE_STATUSES = {"Vacant", "Occupied", "Awaiting Checkout"}
 ORDER_STATUSES = {"active", "preparing", "ready", "served", "received", "payment_pending", "paid", "cancelled"}
+PASSWORD_HISTORY_SIZE = 5
 DEFAULT_MENU_OPTIONS = {
     "spiciness": [("ระดับ 0 · ไม่เผ็ด", 0), ("ระดับ 1 · เผ็ดน้อย", 0), ("ระดับ 2 · เผ็ดกลาง", 0), ("ระดับ 3 · เผ็ดมาก", 0), ("ระดับ 4 · เผ็ดพิเศษ", 0)],
     "portion": [("เล็ก", 0), ("ปกติ", 0), ("ใหญ่", 0)],
@@ -92,9 +94,17 @@ def apply_schema_defaults(data: dict[str, Any]) -> bool:
         if not isinstance(data.get(key), type(default)):
             data[key] = default
             changed = True
+    for user in data.get("users", []):
+        if not isinstance(user.get("password_history"), list):
+            user["password_history"] = []
+            changed = True
     for item in data.get("menu_items", []):
-        if "stock_quantity" not in item:
-            item["stock_quantity"] = 999999
+        if "stock_quantity" in item:
+            item.pop("stock_quantity", None)
+            changed = True
+    for order in data.get("orders", []):
+        if "stock_deducted" in order:
+            order.pop("stock_deducted", None)
             changed = True
     settings = data.setdefault("settings", {})
     design_defaults = (("opening_days", "ทุกวัน"), ("opening_hours", "10:00 - 22:00"), ("welcome_message", "อร่อยง่าย สั่งได้เลย"), ("featured_menu_ids", []), ("hero_title", "อร่อยง่าย สั่งได้เลย"), ("announcement", ""), ("logo_url", ""), ("hero_image_url", ""), ("primary_color", "#176b50"), ("accent_color", "#d9ef93"), ("page_background", "#f6f5ef"), ("card_style", "rounded"), ("show_featured", True))
@@ -299,10 +309,14 @@ def ensure_demo_users(data: dict[str, Any]) -> bool:
         (os.environ.get("RMS_STAFF_USER", "staff"), "staff", "RMS_STAFF_PASSWORD", "staff1234"),
     ):
         if not any(u.get("username") == username for u in data["users"]):
-            data["users"].append({"id": str(uuid4()), "username": username, "password_hash": generate_password_hash(os.environ.get(env_name, default_password)), "security_answer_hash": generate_password_hash("helloworld"), "role": role, "created_at": now_iso()})
+            password = _validate_password(os.environ.get(env_name, default_password), "รหัสผ่านบัญชีเริ่มต้น")
+            data["users"].append({"id": str(uuid4()), "username": username, "password_hash": generate_password_hash(password), "password_history": [], "security_answer_hash": generate_password_hash("helloworld"), "role": role, "created_at": now_iso()})
             changed = True
         else:
             existing = next(u for u in data["users"] if u.get("username") == username)
+            if not isinstance(existing.get("password_history"), list):
+                existing["password_history"] = []
+                changed = True
             if existing.get("role") == role and not existing.get("security_answer_hash"):
                 existing["security_answer_hash"] = generate_password_hash("helloworld")
                 changed = True
@@ -474,11 +488,73 @@ def list_records(rows: list[dict[str, Any]], query: str = "", category: str = ""
     return paginate(filtered, page, per_page)
 
 
+def normalize_username(value: Any) -> str:
+    if not isinstance(value, str) or value != value.strip():
+        raise ValidationError("ชื่อผู้ใช้ห้ามมีช่องว่างด้านหน้า/ท้าย")
+    if not 3 <= len(value) <= 40 or any(char.isspace() for char in value):
+        raise ValidationError("ชื่อผู้ใช้ต้องยาว 3–40 ตัว และห้ามมีช่องว่าง")
+    allowed_punctuation = {".", "_", "-"}
+    for index, char in enumerate(value):
+        category = unicodedata.category(char)
+        if not (category[0] in {"L", "N"} or category[0] == "M" and index > 0 or char in allowed_punctuation):
+            raise ValidationError("ชื่อผู้ใช้ใช้ได้เฉพาะตัวอักษร ตัวเลข จุด ขีดล่าง และขีดกลาง")
+    if value[0] in allowed_punctuation or value[-1] in allowed_punctuation:
+        raise ValidationError("ชื่อผู้ใช้ต้องเริ่มและจบด้วยตัวอักษรหรือตัวเลข")
+    return value
+
+
+def normalize_login_identity(value: Any) -> str:
+    if not isinstance(value, str) or value != value.strip() or any(char.isspace() for char in value):
+        raise ValidationError("ชื่อผู้ใช้หรืออีเมลห้ามมีช่องว่าง")
+    if "@" in value:
+        identity = value.casefold()
+        if len(identity) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", identity):
+            raise ValidationError("รูปแบบอีเมลไม่ถูกต้อง")
+        return identity
+    return normalize_username(value)
+
+
+def _validate_password(value: Any, label: str = "รหัสผ่าน", minimum: int = 8) -> str:
+    if not isinstance(value, str) or any(char.isspace() for char in value):
+        raise ValidationError(f"{label}ห้ามมีช่องว่าง")
+    if not minimum <= len(value) <= 128:
+        raise ValidationError(f"{label}ต้องมี {minimum}–128 ตัวอักษร")
+    if any(not char.isprintable() for char in value):
+        raise ValidationError(f"{label}มีอักขระควบคุมที่ไม่รองรับ")
+    return value
+
+
+def _password_matches_hash(password: str, password_hash: Any) -> bool:
+    if not isinstance(password_hash, str) or not password_hash:
+        return False
+    try:
+        return check_password_hash(password_hash, password)
+    except (TypeError, ValueError):
+        return False
+
+
+def _replace_password(user: dict[str, Any], new_password: str) -> None:
+    history = user.get("password_history", [])
+    if not isinstance(history, list):
+        history = []
+    recent_hashes = [user.get("password_hash"), *history[:PASSWORD_HISTORY_SIZE - 1]]
+    if any(_password_matches_hash(new_password, old_hash) for old_hash in recent_hashes):
+        raise ValidationError(f"ห้ามใช้รหัสผ่านซ้ำกับ {PASSWORD_HISTORY_SIZE} รหัสล่าสุด")
+    old_hash = user.get("password_hash")
+    prior_hashes = [old_hash] if isinstance(old_hash, str) and old_hash else []
+    prior_hashes.extend(value for value in history if isinstance(value, str) and value not in prior_hashes)
+    user["password_history"] = prior_hashes[:PASSWORD_HISTORY_SIZE - 1]
+    user["password_hash"] = generate_password_hash(new_password)
+
+
 def prepare_registration(data: dict[str, Any], username_value: Any, email_value: Any, password_value: Any, confirm_password_value: Any, security_answer_value: Any = None) -> dict[str, str]:
-    username = normalize_text(username_value, "ชื่อผู้ใช้", 40)
-    email = normalize_text(email_value, "อีเมล", 254).casefold()
-    password = normalize_text(password_value, "รหัสผ่าน", 128)
-    confirm_password = normalize_text(confirm_password_value, "ยืนยันรหัสผ่าน", 128)
+    username = normalize_username(username_value)
+    raw_email = normalize_text(email_value, "อีเมล", 254)
+    email = raw_email.casefold()
+    if raw_email != email_value or any(char.isspace() for char in email) or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+        raise ValidationError("อีเมลต้องไม่มีช่องว่างและอยู่ในรูปแบบที่ถูกต้อง")
+    password = _validate_password(password_value)
+    confirm_password = _validate_password(confirm_password_value, "ยืนยันรหัสผ่าน")
     security_answer = normalize_text(security_answer_value, "คำตอบยืนยันตัวตน", 120).casefold()
     if len(username) < 3 or len(password) < 8:
         raise ValidationError("ชื่อผู้ใช้ต้องยาวอย่างน้อย 3 ตัว และรหัสผ่านอย่างน้อย 8 ตัว")
@@ -492,13 +568,13 @@ def prepare_registration(data: dict[str, Any], username_value: Any, email_value:
         raise ValidationError("ชื่อผู้ใช้นี้ถูกใช้แล้ว")
     if any(user.get("email", "").casefold() == email for user in data["users"] if user.get("email")):
         raise ValidationError("อีเมลนี้ถูกใช้แล้ว")
-    return {"username": username, "email": email, "password_hash": generate_password_hash(password), "security_answer_hash": generate_password_hash(security_answer), "created_at": now_iso()}
+    return {"username": username, "email": email, "password_hash": generate_password_hash(password), "password_history": [], "security_answer_hash": generate_password_hash(security_answer), "created_at": now_iso()}
 
 
 def complete_registration(data: dict[str, Any], pending: Any) -> dict[str, Any]:
     if not isinstance(pending, dict):
         raise ValidationError("ไม่พบข้อมูลสมัครสมาชิก กรุณาเริ่มใหม่")
-    username = normalize_text(pending.get("username"), "ชื่อผู้ใช้", 40)
+    username = normalize_username(pending.get("username"))
     email = normalize_text(pending.get("email"), "อีเมล", 254).casefold()
     password_hash = pending.get("password_hash")
     security_answer_hash = pending.get("security_answer_hash")
@@ -512,7 +588,7 @@ def complete_registration(data: dict[str, Any], pending: Any) -> dict[str, Any]:
         raise ValidationError("ชื่อผู้ใช้นี้ถูกใช้แล้ว กรุณาสมัครด้วยชื่ออื่น")
     if any(user.get("email", "").casefold() == email for user in data["users"] if user.get("email")):
         raise ValidationError("อีเมลนี้ถูกใช้แล้ว กรุณาสมัครด้วยอีเมลอื่น")
-    user = {"id": str(uuid4()), "username": username, "email": email, "password_hash": password_hash, "security_answer_hash": security_answer_hash, "role": "customer", "created_at": now_iso()}
+    user = {"id": str(uuid4()), "username": username, "email": email, "password_hash": password_hash, "password_history": [], "security_answer_hash": security_answer_hash, "role": "customer", "created_at": now_iso()}
     data["users"].append(user)
     audit(data, username, "register", "สมัครสมาชิก")
     if not save_data(data):
@@ -527,10 +603,10 @@ def register_user(data: dict[str, Any], username_value: Any, password_value: Any
 
 
 def authenticate(data: dict[str, Any], username_value: Any, password_value: Any) -> dict[str, Any] | None:
-    username = normalize_text(username_value, "ชื่อผู้ใช้หรืออีเมล", 254)
-    password = normalize_text(password_value, "รหัสผ่าน", 128)
+    username = normalize_login_identity(username_value)
+    password = _validate_password(password_value, "รหัสผ่าน", 1)
     user = next((u for u in data["users"] if u.get("username", "").casefold() == username.casefold() or u.get("email", "").casefold() == username.casefold()), None)
-    if user and user.get("role") in ROLES and check_password_hash(user.get("password_hash", ""), password):
+    if user and user.get("role") in ROLES and _password_matches_hash(password, user.get("password_hash")):
         return user
     return None
 
@@ -539,34 +615,30 @@ def change_user_password(data: dict[str, Any], user_id: Any, current_password_va
     user = next((row for row in data.get("users", []) if str(row.get("id")) == str(user_id)), None)
     if not user:
         raise ValidationError("ไม่พบบัญชีผู้ใช้")
-    current_password = normalize_text(current_password_value, "รหัสผ่านปัจจุบัน", 128)
-    new_password = normalize_text(new_password_value, "รหัสผ่านใหม่", 128)
-    confirm_password = normalize_text(confirm_password_value, "ยืนยันรหัสผ่านใหม่", 128)
-    if not check_password_hash(user.get("password_hash", ""), current_password):
+    current_password = _validate_password(current_password_value, "รหัสผ่านปัจจุบัน", 1)
+    new_password = _validate_password(new_password_value, "รหัสผ่านใหม่")
+    confirm_password = _validate_password(confirm_password_value, "ยืนยันรหัสผ่านใหม่")
+    if not _password_matches_hash(current_password, user.get("password_hash")):
         raise ValidationError("รหัสผ่านปัจจุบันไม่ถูกต้อง")
-    if len(new_password) < 8:
-        raise ValidationError("รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร")
     if new_password != confirm_password:
         raise ValidationError("รหัสผ่านใหม่และช่องยืนยันไม่ตรงกัน")
-    user["password_hash"] = generate_password_hash(new_password)
+    _replace_password(user, new_password)
     audit(data, user.get("username", "unknown"), "password_change", "เปลี่ยนรหัสผ่าน")
     if not save_data(data):
         raise StorageError("บันทึกการเปลี่ยนรหัสผ่านไม่สำเร็จ กรุณาลองใหม่")
 
 
 def reset_user_password(data: dict[str, Any], identity_value: Any, answer_value: Any, new_password_value: Any, confirm_password_value: Any) -> None:
-    identity = normalize_text(identity_value, "ชื่อผู้ใช้หรืออีเมล", 254).casefold()
+    identity = normalize_login_identity(identity_value)
     answer = normalize_text(answer_value, "คำตอบยืนยันตัวตน", 120).casefold()
-    new_password = normalize_text(new_password_value, "รหัสผ่านใหม่", 128)
-    confirm_password = normalize_text(confirm_password_value, "ยืนยันรหัสผ่านใหม่", 128)
-    if len(new_password) < 8:
-        raise ValidationError("รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร")
+    new_password = _validate_password(new_password_value, "รหัสผ่านใหม่")
+    confirm_password = _validate_password(confirm_password_value, "ยืนยันรหัสผ่านใหม่")
     if new_password != confirm_password:
         raise ValidationError("รหัสผ่านใหม่และช่องยืนยันไม่ตรงกัน")
     user = next((row for row in data.get("users", []) if row.get("username", "").casefold() == identity or row.get("email", "").casefold() == identity), None)
-    if not user or not user.get("security_answer_hash") or not check_password_hash(user["security_answer_hash"], answer):
+    if not user or not _password_matches_hash(answer, user.get("security_answer_hash")):
         raise ValidationError("ข้อมูลยืนยันตัวตนไม่ถูกต้อง กรุณาตรวจสอบชื่อบัญชีและคำตอบ")
-    user["password_hash"] = generate_password_hash(new_password)
+    _replace_password(user, new_password)
     audit(data, user.get("username", "unknown"), "password_reset", "รีเซ็ตรหัสผ่านด้วยคำตอบยืนยันตัวตน")
     if not save_data(data):
         raise StorageError("บันทึกรหัสผ่านใหม่ไม่สำเร็จ กรุณาลองใหม่")
@@ -578,7 +650,7 @@ def update_security_answer(data: dict[str, Any], user_id: Any, current_password_
         raise ValidationError("ไม่พบบัญชีผู้ใช้")
     current_password = normalize_text(current_password_value, "รหัสผ่านปัจจุบัน", 128)
     answer = normalize_text(answer_value, "คำตอบยืนยันตัวตน", 120).casefold()
-    if not check_password_hash(user.get("password_hash", ""), current_password):
+    if not _password_matches_hash(current_password, user.get("password_hash")):
         raise ValidationError("รหัสผ่านปัจจุบันไม่ถูกต้อง")
     if len(answer) < 2:
         raise ValidationError("คำตอบยืนยันตัวตนต้องมีอย่างน้อย 2 ตัวอักษร")
@@ -618,12 +690,10 @@ def save_menu_item(data: dict[str, Any], form: Any, actor: str, item_id: str | N
     name = normalize_text(form.get("name"), "ชื่อเมนู", 80)
     category = normalize_text(form.get("category"), "หมวดหมู่", 40)
     price = parse_float(form.get("price"), "ราคา", 0.01, 100000)
-    stock_default = int(item.get("stock_quantity", 999999)) if item else 40
-    stock_quantity = parse_int(form.get("stock_quantity", stock_default), "จำนวนคงเหลือ", 0, 1000000)
     image_url = normalize_text(form.get("image_url", ""), "URL รูปภาพ", 500, required=False)
     if image_url and not image_url.startswith(("https://", "http://")):
         raise ValidationError("URL รูปภาพต้องขึ้นต้นด้วย http:// หรือ https://")
-    available = parse_bool(form.get("available", "false"), "สถานะพร้อมขาย") and stock_quantity > 0
+    available = parse_bool(form.get("available", "false"), "สถานะพร้อมขาย")
     spiciness = normalize_text(form.get("spiciness", "ระดับ 0 · ไม่เผ็ด"), "ระดับความเผ็ด", 20)
     portion = normalize_text(form.get("portion", "ปกติ"), "ขนาด", 20)
     options = {
@@ -634,16 +704,14 @@ def save_menu_item(data: dict[str, Any], form: Any, actor: str, item_id: str | N
     addons = [option["name"] for option in options["addons"]]
     if item:
         old_price = item.get("price")
-        old_stock = int(item.get("stock_quantity", 999999))
-        item.update(name=name, category=category, price=price, image_url=image_url, available=available, stock_quantity=stock_quantity, spiciness=spiciness, portion=portion, addons=addons, options=options)
+        item.pop("stock_quantity", None)
+        item.update(name=name, category=category, price=price, image_url=image_url, available=available, spiciness=spiciness, portion=portion, addons=addons, options=options)
         if old_price != price:
             audit(data, actor, "price_change", f"เปลี่ยนราคา {name}: {old_price} → {price:.2f}")
-        if old_stock != stock_quantity:
-            audit(data, actor, "inventory_adjust", f"ปรับสต็อก {name}: {old_stock} → {stock_quantity}")
-        if old_price == price and old_stock == stock_quantity:
+        else:
             audit(data, actor, "menu_update", f"แก้ไขเมนู {name}")
     else:
-        item = {"id": max([int(r.get("id", 0)) for r in data["menu_items"]] + [0]) + 1, "name": name, "category": category, "price": price, "image_url": image_url, "available": available, "stock_quantity": stock_quantity, "spiciness": spiciness, "portion": portion, "addons": addons, "options": options, "created_at": now_iso()}
+        item = {"id": max([int(r.get("id", 0)) for r in data["menu_items"]] + [0]) + 1, "name": name, "category": category, "price": price, "image_url": image_url, "available": available, "spiciness": spiciness, "portion": portion, "addons": addons, "options": options, "created_at": now_iso()}
         data["menu_items"].append(item)
         audit(data, actor, "menu_create", f"เพิ่มเมนู {name}")
     if not save_data(data):
@@ -899,18 +967,10 @@ def force_release_table(data: dict[str, Any], table_id: Any, actor: str) -> dict
     if not table:
         raise ValidationError("ไม่พบโต๊ะที่ต้องการยกเลิก")
     cancelled_orders = []
-    restocked_quantity = 0
     for order in data.get("orders", []):
         if str(order.get("table_id")) != str(table["id"]) or order.get("status") in {"paid", "cancelled"}:
             continue
-        if order.get("stock_deducted") and order.get("status") == "active":
-            for line in order.get("items", []):
-                menu = find_by_id(data.get("menu_items", []), line.get("menu_id"))
-                if menu:
-                    quantity = int(line.get("qty", 0))
-                    menu["stock_quantity"] = int(menu.get("stock_quantity", 999999)) + quantity
-                    restocked_quantity += quantity
-            order["stock_deducted"] = False
+        order.pop("stock_deducted", None)
         order["status"] = "cancelled"
         order["cancelled_at"] = now_iso()
         order["cancelled_by"] = actor
@@ -931,7 +991,7 @@ def force_release_table(data: dict[str, Any], table_id: Any, actor: str) -> dict
     assign_waiting_customers(data)
     if not save_data(data):
         raise ValidationError("ยกเลิกการใช้โต๊ะไม่สำเร็จ กรุณาลองใหม่")
-    return {"table": table, "cancelled_orders": len(cancelled_orders), "cancelled_reservations": cancelled_reservations, "restocked_quantity": restocked_quantity}
+    return {"table": table, "cancelled_orders": len(cancelled_orders), "cancelled_reservations": cancelled_reservations}
 
 
 def create_order(data: dict[str, Any], table_id_value: Any, actor: str) -> dict[str, Any]:
@@ -943,7 +1003,7 @@ def create_order(data: dict[str, Any], table_id_value: Any, actor: str) -> dict[
         raise ValidationError("โต๊ะกำลังรอชำระเงิน")
     order = next((o for o in data["orders"] if int(o.get("table_id", -1)) == table_id and o.get("status") not in {"paid", "cancelled"}), None)
     if not order:
-        order = {"id": str(uuid4())[:8].upper(), "table_id": table_id, "items": [], "stock_deducted": True, "status": "active", "created_at": now_iso(), "updated_at": now_iso()}
+        order = {"id": str(uuid4())[:8].upper(), "table_id": table_id, "items": [], "status": "active", "created_at": now_iso(), "updated_at": now_iso()}
         data["orders"].append(order)
     table["status"] = "Occupied"
     audit(data, actor, "order_create", f"เปิดออเดอร์โต๊ะ {table['number']}")
@@ -1095,23 +1155,13 @@ def create_customer_table_order(data: dict[str, Any], customer: dict[str, Any], 
     if not cart:
         raise ValidationError("ยังไม่มีเมนูในตะกร้า")
     items = []
-    requested_by_menu: dict[int, int] = {}
     for entry in cart:
         options = entry.get("options", {})
         selections = {"spiciness": options.get("spiciness"), "portion": options.get("portion"), "addons": options.get("addons", [])}
         line = prepare_customer_cart_line(data, entry.get("menu_id"), entry.get("qty"), selections)
-        requested_by_menu[line["menu_id"]] = requested_by_menu.get(line["menu_id"], 0) + line["qty"]
         line["line_id"] = str(uuid4())
         items.append(line)
-    for menu_id, quantity in requested_by_menu.items():
-        menu = find_by_id(data["menu_items"], menu_id)
-        available_stock = int(menu.get("stock_quantity", 999999))
-        if available_stock < quantity:
-            raise ValidationError(f"เมนู {menu['name']} เหลือ {available_stock} จาน แต่ตะกร้าต้องการ {quantity} จาน")
-    for menu_id, quantity in requested_by_menu.items():
-        menu = find_by_id(data["menu_items"], menu_id)
-        menu["stock_quantity"] = int(menu.get("stock_quantity", 999999)) - quantity
-    order = {"id": str(uuid4())[:8].upper(), "table_id": table["id"], "customer_id": customer["id"], "customer_name": customer["username"], "party_size": reservation["party_size"], "order_type": "dine_in", "items": items, "stock_deducted": True, "status": "active", "created_at": now_iso(), "updated_at": now_iso()}
+    order = {"id": str(uuid4())[:8].upper(), "table_id": table["id"], "customer_id": customer["id"], "customer_name": customer["username"], "party_size": reservation["party_size"], "order_type": "dine_in", "items": items, "status": "active", "created_at": now_iso(), "updated_at": now_iso()}
     data.setdefault("orders", []).append(order)
     data.setdefault("carts", {}).pop(str(customer["id"]), None)
     table["status"] = "Occupied"
@@ -1134,11 +1184,6 @@ def change_customer_order_item(data: dict[str, Any], order_id: str, customer: di
         delta = parse_int(quantity_value, "จำนวน", -50, 50)
         if not line or delta == 0 or int(line.get("qty", 0)) + delta < 0 or int(line.get("qty", 0)) + delta > 50:
             raise ValidationError("ปรับจำนวนรายการนี้ไม่ได้")
-        menu = find_by_id(data.get("menu_items", []), line.get("menu_id"))
-        if delta > 0 and menu and int(menu.get("stock_quantity", 999999)) < delta:
-            raise ValidationError(f"เมนู {menu['name']} มีสต็อกไม่พอ เหลือ {menu.get('stock_quantity', 0)} จาน")
-        if menu and order.get("stock_deducted"):
-            menu["stock_quantity"] = int(menu.get("stock_quantity", 999999)) - delta
         line["qty"] += delta
         if line["qty"] == 0:
             order["items"].remove(line)
@@ -1168,10 +1213,6 @@ def change_order_item(data: dict[str, Any], order_id: str, menu_id: Any, quantit
     new_qty = old_qty + quantity
     if new_qty < 0:
         raise ValidationError("จำนวนที่จะลดมากกว่าจำนวนที่สั่ง")
-    if quantity > 0 and int(menu.get("stock_quantity", 999999)) < quantity:
-        raise ValidationError(f"เมนู {menu['name']} มีสต็อกไม่พอ เหลือ {menu.get('stock_quantity', 0)} จาน")
-    if order.get("stock_deducted"):
-        menu["stock_quantity"] = int(menu.get("stock_quantity", 999999)) - quantity
     if new_qty == 0 and line:
         order["items"].remove(line)
     elif line:
@@ -1194,11 +1235,7 @@ def cancel_order(data: dict[str, Any], order_id: str, actor: str) -> None:
     order = find_by_id(data["orders"], order_id)
     if not order or order.get("status") in {"paid", "cancelled"}:
         raise ValidationError("ไม่พบออเดอร์ที่ยกเลิกได้")
-    if order.get("stock_deducted"):
-        for line in order.get("items", []):
-            menu = find_by_id(data.get("menu_items", []), line.get("menu_id"))
-            if menu:
-                menu["stock_quantity"] = int(menu.get("stock_quantity", 999999)) + int(line.get("qty", 0))
+    order.pop("stock_deducted", None)
     order["status"] = "cancelled"
     finish_table_if_clear(data, order.get("table_id"))
     audit(data, actor, "order_cancel", f"ยกเลิกออเดอร์ {order_id}")

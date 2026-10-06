@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import io
 import json
+import hmac
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from functools import wraps
 from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, send_file, session, url_for
@@ -28,7 +30,9 @@ def create_app() -> Flask:
         if "csrf_token" not in session:
             from secrets import token_urlsafe
             session["csrf_token"] = token_urlsafe(32)
-        if request.method == "POST" and request.form.get("csrf_token") != session.get("csrf_token"):
+        submitted_token = request.form.get("csrf_token")
+        session_token = session.get("csrf_token")
+        if request.method == "POST" and (not isinstance(submitted_token, str) or not isinstance(session_token, str) or not hmac.compare_digest(submitted_token, session_token)):
             abort(400)
 
     @app.context_processor
@@ -48,14 +52,12 @@ def create_app() -> Flask:
 
     def current_user():
         identity = session.get("identity")
-        if isinstance(identity, dict) and identity.get("role") in utils.ROLES and identity.get("id"):
-            return identity
-        user_id = session.get("user_id")
-        if not user_id:
-            return None
-        stored = next((u for u in getattr(g, "data", {}).get("users", []) if str(u.get("id")) == str(user_id)), None)
-        if stored:
+        user_id = identity.get("id") if isinstance(identity, dict) else session.get("user_id")
+        stored = next((u for u in getattr(g, "data", {}).get("users", []) if str(u.get("id")) == str(user_id)), None) if user_id else None
+        if stored and stored.get("role") in utils.ROLES:
             return {"id": stored["id"], "username": stored["username"], "role": stored["role"]}
+        session.pop("identity", None)
+        session.pop("user_id", None)
         return None
 
     def roles_required(*roles):
@@ -141,7 +143,8 @@ def create_app() -> Flask:
                     session["identity"] = {"id": user["id"], "username": user["username"], "role": user["role"]}
                     flash(f"ยินดีต้อนรับ {user['username']}", "success")
                     next_path = request.args.get("next", "")
-                    if not next_path.startswith("/") or next_path.startswith("//"):
+                    parsed_next = urlsplit(next_path)
+                    if not next_path.startswith("/") or next_path.startswith("//") or parsed_next.scheme or parsed_next.netloc or "\\" in next_path:
                         next_path = url_for("dashboard")
                     return redirect(next_path)
             except utils.ValidationError as error:
@@ -281,11 +284,8 @@ def create_app() -> Flask:
         item = utils.find_by_id(g.data["menu_items"], item_id)
         if not item:
             abort(404)
-        if not item.get("available") and int(item.get("stock_quantity", 999999)) <= 0:
-            flash("สต็อกเป็นศูนย์ กรุณาปรับจำนวนคงเหลือก่อนเปิดขาย", "warning")
-            return redirect(url_for("menu_list"))
         item["available"] = not bool(item.get("available"))
-        utils.audit(g.data, current_user()["username"], "stock_toggle", f"{item['name']}: {'พร้อมขาย' if item['available'] else 'หมด'}")
+        utils.audit(g.data, current_user()["username"], "menu_availability_toggle", f"{item['name']}: {'พร้อมขาย' if item['available'] else 'หมด'}")
         if not utils.save_data(g.data):
             flash("บันทึกสถานะไม่สำเร็จ", "error")
         else:
@@ -329,7 +329,7 @@ def create_app() -> Flask:
     def table_force_release(table_id):
         try:
             result = utils.force_release_table(g.data, str(table_id), current_user()["username"])
-            flash(f"ยกเลิกการใช้โต๊ะ {result['table']['number']} แล้ว ยกเลิก {result['cancelled_orders']} ออเดอร์ คืนสต็อกที่ยังไม่เริ่มทำ {result['restocked_quantity']} จาน และแจ้งลูกค้าแล้ว", "success")
+            flash(f"ยกเลิกการใช้โต๊ะ {result['table']['number']} แล้ว ยกเลิก {result['cancelled_orders']} ออเดอร์และแจ้งลูกค้าแล้ว", "success")
         except utils.ValidationError as error:
             handle_validation(error)
         return redirect(url_for("tables"))
