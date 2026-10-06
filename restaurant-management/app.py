@@ -324,6 +324,16 @@ def create_app() -> Flask:
             handle_validation(error)
         return redirect(url_for("tables"))
 
+    @app.post("/tables/<int:table_id>/force-release")
+    @roles_required("admin")
+    def table_force_release(table_id):
+        try:
+            result = utils.force_release_table(g.data, str(table_id), current_user()["username"])
+            flash(f"ยกเลิกการใช้โต๊ะ {result['table']['number']} แล้ว ยกเลิก {result['cancelled_orders']} ออเดอร์ คืนสต็อกที่ยังไม่เริ่มทำ {result['restocked_quantity']} จาน และแจ้งลูกค้าแล้ว", "success")
+        except utils.ValidationError as error:
+            handle_validation(error)
+        return redirect(url_for("tables"))
+
     @app.post("/reservations/future/<reservation_id>")
     @roles_required("admin", "staff")
     def future_reservation_update(reservation_id):
@@ -611,6 +621,16 @@ def create_app() -> Flask:
         try:
             utils.change_customer_order_item(g.data, order_id, current_user(), request.form.get("menu_id"), request.form.get("quantity"), request.form.get("line_id"))
             flash("ปรับจำนวนในออเดอร์แล้ว", "success")
+        except utils.ValidationError as error:
+            handle_validation(error)
+        return redirect(url_for("customer_order_detail", order_id=order_id))
+
+    @app.post("/my-orders/<order_id>/received")
+    @roles_required("customer")
+    def customer_order_received(order_id):
+        try:
+            utils.confirm_customer_order_received(g.data, order_id, current_user())
+            flash("ยืนยันว่าได้รับอาหารแล้ว ตอนนี้สามารถส่งคำขอชำระเงินได้", "success")
         except utils.ValidationError as error:
             handle_validation(error)
         return redirect(url_for("customer_order_detail", order_id=order_id))

@@ -25,7 +25,7 @@ REDIS_DATA_KEY = os.environ.get("RMS_REDIS_DATA_KEY", "restaurant-management:dat
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 ROLES = {"admin", "staff", "customer"}
 TABLE_STATUSES = {"Vacant", "Occupied", "Awaiting Checkout"}
-ORDER_STATUSES = {"active", "preparing", "ready", "served", "payment_pending", "paid", "cancelled"}
+ORDER_STATUSES = {"active", "preparing", "ready", "served", "received", "payment_pending", "paid", "cancelled"}
 DEFAULT_MENU_OPTIONS = {
     "spiciness": [("ระดับ 0 · ไม่เผ็ด", 0), ("ระดับ 1 · เผ็ดน้อย", 0), ("ระดับ 2 · เผ็ดกลาง", 0), ("ระดับ 3 · เผ็ดมาก", 0), ("ระดับ 4 · เผ็ดพิเศษ", 0)],
     "portion": [("เล็ก", 0), ("ปกติ", 0), ("ใหญ่", 0)],
@@ -893,6 +893,47 @@ def delete_table(data: dict[str, Any], table_id: str, actor: str) -> None:
         raise ValidationError("บันทึกข้อมูลไม่สำเร็จ")
 
 
+def force_release_table(data: dict[str, Any], table_id: Any, actor: str) -> dict[str, Any]:
+    """Admin-only workflow: cancel service at an occupied table and make it available."""
+    table = find_by_id(data.get("tables", []), table_id)
+    if not table:
+        raise ValidationError("ไม่พบโต๊ะที่ต้องการยกเลิก")
+    cancelled_orders = []
+    restocked_quantity = 0
+    for order in data.get("orders", []):
+        if str(order.get("table_id")) != str(table["id"]) or order.get("status") in {"paid", "cancelled"}:
+            continue
+        if order.get("stock_deducted") and order.get("status") == "active":
+            for line in order.get("items", []):
+                menu = find_by_id(data.get("menu_items", []), line.get("menu_id"))
+                if menu:
+                    quantity = int(line.get("qty", 0))
+                    menu["stock_quantity"] = int(menu.get("stock_quantity", 999999)) + quantity
+                    restocked_quantity += quantity
+            order["stock_deducted"] = False
+        order["status"] = "cancelled"
+        order["cancelled_at"] = now_iso()
+        order["cancelled_by"] = actor
+        order["cancellation_reason"] = "ผู้ดูแลยกเลิกการใช้โต๊ะ"
+        cancelled_orders.append(order)
+        audit(data, actor, "admin_force_table_release", f"ยกเลิกออเดอร์ {order['id']} จากโต๊ะ {table['number']}")
+        notify_customer(data, order, "ร้านยกเลิกการใช้โต๊ะ", f"ผู้ดูแลยกเลิกการใช้โต๊ะ {table['number']} และยกเลิกออเดอร์ #{order['id']} กรุณาติดต่อพนักงาน")
+    cancelled_reservations = 0
+    for reservation in data.get("reservations", []):
+        if str(reservation.get("table_id")) == str(table["id"]) and reservation.get("status") == "seated":
+            reservation["status"] = "cancelled"
+            reservation["cancelled_at"] = now_iso()
+            reservation["cancelled_by"] = actor
+            cancelled_reservations += 1
+            notify(data, reservation.get("customer_id"), "ยกเลิกการใช้โต๊ะ", f"ผู้ดูแลยกเลิกการใช้โต๊ะ {table['number']} กรุณาติดต่อพนักงาน")
+    table["status"] = "Vacant"
+    audit(data, actor, "admin_force_table_release", f"บังคับยกเลิกการใช้โต๊ะ {table['number']}; ยกเลิก {len(cancelled_orders)} ออเดอร์")
+    assign_waiting_customers(data)
+    if not save_data(data):
+        raise ValidationError("ยกเลิกการใช้โต๊ะไม่สำเร็จ กรุณาลองใหม่")
+    return {"table": table, "cancelled_orders": len(cancelled_orders), "cancelled_reservations": cancelled_reservations, "restocked_quantity": restocked_quantity}
+
+
 def create_order(data: dict[str, Any], table_id_value: Any, actor: str) -> dict[str, Any]:
     table_id = parse_int(table_id_value, "โต๊ะ", 1, 100000)
     table = find_by_id(data["tables"], table_id)
@@ -1192,6 +1233,22 @@ def update_order_status(data: dict[str, Any], order_id: str, status_value: Any, 
     return order
 
 
+def confirm_customer_order_received(data: dict[str, Any], order_id: str, customer: dict[str, Any]) -> dict[str, Any]:
+    """Record the customer's confirmation after staff marks the order served."""
+    order = find_by_id(data.get("orders", []), order_id)
+    if not order or str(order.get("customer_id")) != str(customer.get("id")):
+        raise ValidationError("ไม่พบออเดอร์ของบัญชีนี้")
+    if order.get("order_type") != "dine_in" or order.get("status") != "served":
+        raise ValidationError("ยืนยันรับอาหารได้หลังพนักงานกดเสิร์ฟถึงโต๊ะแล้วเท่านั้น")
+    order["status"] = "received"
+    order["customer_received_at"] = now_iso()
+    audit(data, customer.get("username", "ลูกค้า"), "customer_received_order", f"ยืนยันรับอาหารออเดอร์ {order_id}")
+    notify_staff(data, "ลูกค้ายืนยันรับอาหารแล้ว", f"ออเดอร์ #{order_id} โต๊ะ {order.get('table_id')} ลูกค้ายืนยันว่าได้รับอาหารครบแล้ว", f"/orders/{order_id}")
+    if not save_data(data):
+        raise ValidationError("บันทึกการยืนยันรับอาหารไม่สำเร็จ กรุณาลองใหม่")
+    return order
+
+
 def order_total(order: dict[str, Any]) -> float:
     return round(sum(float(i.get("unit_price", 0)) * int(i.get("qty", 0)) for i in order.get("items", [])), 2)
 
@@ -1236,8 +1293,10 @@ def customer_table_checkout_preview(data: dict[str, Any], customer: dict[str, An
     if not table:
         raise ValidationError("ไม่พบโต๊ะที่กำลังใช้งาน")
     orders = [order for order in data.get("orders", []) if str(order.get("customer_id")) == str(customer["id"]) and str(order.get("table_id")) == str(table["id"]) and order.get("order_type") == "dine_in" and order.get("status") not in {"paid", "cancelled"}]
-    if any(order.get("status") not in {"served", "payment_pending"} for order in orders):
-        raise ValidationError("รอให้พนักงานนำอาหารไปเสิร์ฟถึงโต๊ะก่อน แล้วจึงขอชำระเงินได้")
+    if any(order.get("status") == "served" for order in orders):
+        raise ValidationError("พนักงานเสิร์ฟแล้ว กรุณาไปที่ประวัติออเดอร์ เปิดรายการ แล้วกดยืนยันว่าได้รับอาหารก่อนขอชำระเงิน")
+    if any(order.get("status") not in {"received", "payment_pending"} for order in orders):
+        raise ValidationError("รอให้พนักงานเสิร์ฟและลูกค้ายืนยันรับอาหารก่อน แล้วจึงขอชำระเงินได้")
     if not orders:
         raise ValidationError("ยังไม่มีรายการชำระเงิน กรุณาแจ้งพนักงานให้ตรวจสอบและยืนยันปล่อยโต๊ะ")
     bills = [{"order": order, "bill": calculate_bill(order)} for order in orders]
@@ -1247,7 +1306,7 @@ def customer_table_checkout_preview(data: dict[str, Any], customer: dict[str, An
 def customer_table_checkout(data: dict[str, Any], customer: dict[str, Any]) -> dict[str, Any]:
     preview = customer_table_checkout_preview(data, customer)
     pending = [row for row in preview["bills"] if row["order"].get("status") == "payment_pending"]
-    ready = [row for row in preview["bills"] if row["order"].get("status") == "served"]
+    ready = [row for row in preview["bills"] if row["order"].get("status") == "received"]
     if pending and not ready:
         raise ValidationError("ส่งคำขอชำระเงินแล้ว กรุณารอร้านตรวจสอบ")
     for row in ready:
