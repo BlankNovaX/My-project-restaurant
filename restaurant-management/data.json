@@ -12,6 +12,24 @@
       ],
       "security_answer_hash": "0a22180669314271$e0e4155ff125d6dcebe31f567600335f29d2fa7c291c3f045f6d6dc1f4b940f0",
       "role": "customer"
+    },
+    {
+      "id": "5eea8624-c26e-4b01-8f3e-490ada3110ec",
+      "username": "admin",
+      "password_hash": "scrypt:32768:8:1$LQ8cmqRAT9z6eM1f$5d6081926177c10ae0de40eb3291c3c2acb9d2a90a92cdb6bd7fa276183a9317efde512803995399a5d7a82a4b6eab97161d08c6a7c3afe2c371b1f4f7ff2fa7",
+      "password_history": [],
+      "security_answer_hash": "scrypt:32768:8:1$DBlzGtNsEfLxfSXt$5f458f20792575e6a145fdfb4c3a92e9077697895054b87248981272519c54ddf185ad5e5e5e0fbe832968635fb7db358c7304bdd4880048a43b8936368ca48f",
+      "role": "admin",
+      "created_at": "2026-10-06T11:29:05+07:00"
+    },
+    {
+      "id": "4d6389b5-b7c9-4526-bd54-fd4288eaa64d",
+      "username": "staff",
+      "password_hash": "scrypt:32768:8:1$nDM6dbCQ9Fy4XNXK$ebe9d09a2cc7b750e59dcf12001e9ad5d362c5bedf29b1d1ae53ea8bb8a20d4d620a0c9f9ebd08ec2e174ea94bac46e7193ab26649cf59a0189863be69e9a158",
+      "password_history": [],
+      "security_answer_hash": "scrypt:32768:8:1$x4YUijuwhwP85b1D$02eb4d19fac997527d776dd28f5b02f08db7d2e91c0ffbce33e4e267af0e97cc31530279e10e4091d2bd9c645ceee5ea6e1d9014fa17e637dc7f0d2a18336524",
+      "role": "staff",
+      "created_at": "2026-10-06T11:29:05+07:00"
     }
   ],
   "menu_items": [],
