@@ -815,8 +815,10 @@ def create_future_reservation(data: dict[str, Any], customer: dict[str, Any], pa
     except ValueError as error:
         raise ValidationError("กรุณาเลือกวันและเวลาจองให้ถูกต้อง") from error
     now = datetime.now(ZoneInfo("Asia/Bangkok"))
-    if starts_at < now + timedelta(minutes=10) or starts_at > now + timedelta(days=90):
-        raise ValidationError("จองล่วงหน้าได้ตั้งแต่ 10 นาทีถึง 90 วัน")
+    if starts_at <= now:
+        raise ValidationError("เวลาเข้ารับบริการต้องอยู่หลังเวลาปัจจุบัน")
+    if starts_at > now + timedelta(days=3):
+        raise ValidationError("จองล่วงหน้าได้ไม่เกิน 3 วัน")
     maximum = maximum_table_capacity(data)
     if party_size > maximum:
         raise ValidationError(f"โต๊ะใหญ่ที่สุดรับได้ {maximum} คน กรุณาแยกจองกลุ่มที่เหลือ")
@@ -843,6 +845,14 @@ def create_future_reservation(data: dict[str, Any], customer: dict[str, Any], pa
     if not save_data(data):
         raise ValidationError("บันทึกการจองไม่สำเร็จ กรุณาลองใหม่")
     return reservation
+
+
+def future_reservation_input_bounds() -> tuple[str, str]:
+    """Return minute-precision Bangkok-local bounds for the booking form."""
+    now = datetime.now(ZoneInfo("Asia/Bangkok"))
+    earliest = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    latest = now + timedelta(days=3)
+    return earliest.strftime("%Y-%m-%dT%H:%M"), latest.strftime("%Y-%m-%dT%H:%M")
 
 
 def active_future_reservations(data: dict[str, Any], customer_id: Any) -> list[dict[str, Any]]:

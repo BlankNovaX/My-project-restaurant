@@ -221,7 +221,8 @@ def create_app() -> Flask:
             featured = [item for item in g.data["menu_items"] if str(item.get("id")) in {str(item_id) for item_id in featured_ids}]
             if not featured:
                 featured = [item for item in g.data["menu_items"] if item.get("available")][:3]
-            return render_template("customer.html", listing=listing, categories=sorted({i["category"] for i in g.data["menu_items"]}), settings=settings, featured=featured, max_table_capacity=utils.maximum_table_capacity(g.data))
+            reservation_min, reservation_max = utils.future_reservation_input_bounds()
+            return render_template("customer.html", listing=listing, categories=sorted({i["category"] for i in g.data["menu_items"]}), settings=settings, featured=featured, max_table_capacity=utils.maximum_table_capacity(g.data), reservation_min=reservation_min, reservation_max=reservation_max)
         report = utils.daily_report(g.data)
         active_orders = [o for o in g.data["orders"] if o.get("status") not in {"paid", "cancelled"}]
         active_orders.sort(key=lambda o: o.get("created_at", ""))
@@ -238,7 +239,8 @@ def create_app() -> Flask:
             featured = [item for item in g.data["menu_items"] if str(item.get("id")) in {str(item_id) for item_id in featured_ids}]
             if not featured:
                 featured = [item for item in g.data["menu_items"] if item.get("available")][:3]
-            return render_template("customer.html", listing=listing, categories=sorted({i["category"] for i in g.data["menu_items"]}), settings=settings, featured=featured, max_table_capacity=utils.maximum_table_capacity(g.data))
+            reservation_min, reservation_max = utils.future_reservation_input_bounds()
+            return render_template("customer.html", listing=listing, categories=sorted({i["category"] for i in g.data["menu_items"]}), settings=settings, featured=featured, max_table_capacity=utils.maximum_table_capacity(g.data), reservation_min=reservation_min, reservation_max=reservation_max)
         return render_template("menu.html", listing=listing, categories=sorted({i["category"] for i in g.data["menu_items"]}), can_edit=user["role"] in {"admin", "staff"})
 
     @app.route("/menu/new", methods=["GET", "POST"])
